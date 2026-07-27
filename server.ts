@@ -264,6 +264,7 @@ function parseM3U(content: string): M3UParseResult {
 
 // Auth Endpoints
 app.post('/api/auth/login', (req: Request, res: Response) => {
+  console.log('Login attempt for:', req.body.email);
   const { email, password } = req.body;
   const inputStr = (email || '').toLowerCase().trim();
 
@@ -276,6 +277,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   );
 
   if (!user) {
+    console.log('User not found:', inputStr);
     return res.status(401).json({ error: 'User account not found. Please register or enter valid credentials.' });
   }
 
@@ -283,16 +285,19 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   if (user.role === 'admin') {
     const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
     if (!password || password !== adminPassword) {
+      console.log('Admin password mismatch for:', inputStr);
       return res.status(401).json({ error: 'Incorrect Administrator Password. Access Denied.' });
     }
   } else {
     // If a password is set for standard user, verify it
     if (user.password && user.password !== password) {
+      console.log('User password mismatch for:', inputStr);
       return res.status(401).json({ error: 'Incorrect Password. Access Denied.' });
     }
   }
 
   const token = generateToken(user);
+  console.log('Login successful for:', inputStr);
   return res.json({
     token,
     user
