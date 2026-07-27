@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "users": {
+      "title": "Users",
+      "description": "User accounts and subscription details",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "subscriptionPlan": { "type": "string" },
+        "subscriptionExpiresAt": { "type": "string" },
+        "avatar": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["username", "role", "subscriptionPlan"]
+    },
+    "channels": {
+      "title": "Channels",
+      "description": "IPTV Live Channels",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "logo": { "type": "string" },
+        "streamUrl": { "type": "string" },
+        "channelNumber": { "type": "number" },
+        "isPremium": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "tvgId": { "type": "string" }
+      },
+      "required": ["name", "streamUrl"]
+    },
+    "playlists": {
+      "title": "Playlists",
+      "description": "Xtream accounts and M3U playlists",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "url": { "type": "string" },
+        "server": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "type"]
+    }
+  }
+}
