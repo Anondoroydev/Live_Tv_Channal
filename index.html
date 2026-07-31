@@ -2,13 +2,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bd Tv Channel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Blink WebTV</title>
+    
+    <!-- PWA & Mobile Optimization -->
+    <meta name="theme-color" content="#020617" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Blink TV" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <link rel="manifest" href="/manifest.json" />
   </head>
-  <body>
+  <body class="bg-[#020617] overflow-hidden select-none">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register("/sw.js")
+            .then((reg) => {
+              console.log("ServiceWorker registration successful with scope: ", reg.scope);
+            })
+            .catch((err) => {
+              console.error("ServiceWorker registration failed: ", err);
+            });
+        });
+      }
+    </script>
   </body>
 </html>
-
-

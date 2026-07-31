@@ -1,7 +1,17 @@
-import React, { useState } from 'react';
-import { User, Lock, Mail, Sparkles, CheckCircle2, ShieldCheck, X, Zap, UserPlus } from 'lucide-react';
-import { apiService } from '../services/api';
-import { User as UserType, SubscriptionPlan } from '../types';
+import React, { useState } from "react";
+import {
+  User,
+  Lock,
+  Mail,
+  Sparkles,
+  CheckCircle2,
+  ShieldCheck,
+  X,
+  Zap,
+  UserPlus,
+} from "lucide-react";
+import { apiService } from "../services/api";
+import { User as UserType, SubscriptionPlan } from "../types";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -12,12 +22,12 @@ interface LoginModalProps {
 export const LoginModal: React.FC<LoginModalProps> = ({
   isOpen,
   onClose,
-  onLoginSuccess
+  onLoginSuccess,
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,7 +39,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     setError(null);
 
     try {
-      if (mode === 'login') {
+      if (mode === "login") {
         const data = await apiService.login(email, password);
         onLoginSuccess(data.user);
         onClose();
@@ -39,7 +49,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         onClose();
       }
     } catch (err: any) {
-      setError(err.message || (mode === 'login' ? 'Login failed' : 'Registration failed'));
+      setError(
+        err.message ||
+          (mode === "login" ? "Login failed" : "Registration failed"),
+      );
     } finally {
       setLoading(false);
     }
@@ -59,14 +72,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center gap-3 mb-6">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-slate-950 font-bold shadow-lg shadow-cyan-500/30">
-            {mode === 'login' ? <User className="w-6 h-6" /> : <UserPlus className="w-6 h-6" />}
+            {mode === "login" ? (
+              <User className="w-6 h-6" />
+            ) : (
+              <UserPlus className="w-6 h-6" />
+            )}
           </div>
           <div>
             <h2 className="text-xl font-black tracking-wide">
-              {mode === 'login' ? 'IPTV Account Login' : 'Create IPTV Account'}
+              {mode === "login" ? "IPTV Account Login" : "Create IPTV Account"}
             </h2>
             <p className="text-xs text-slate-400 font-medium">
-              {mode === 'login' ? 'Access your premium streams' : 'Register for personal premium streaming'}
+              {mode === "login"
+                ? "Access your premium streams"
+                : "Register for personal premium streaming"}
             </p>
           </div>
         </div>
@@ -79,7 +98,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {mode === 'register' && (
+          {mode === "register" && (
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
                 Username (ব্যবহারকারীর নাম)
@@ -100,15 +119,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
           <div>
             <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-              Email Address (ইমেইল ঠিকানা)
+              Email / Username (ইমেইল বা অ্যাডমিন ইউজারনেম)
             </label>
             <div className="relative">
               <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="yourname@gmail.com"
+                placeholder="e.g. admin or yourname@gmail.com"
                 required
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-400 transition-colors"
               />
@@ -137,18 +156,49 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             disabled={loading}
             className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black rounded-xl shadow-lg shadow-cyan-500/20 text-xs uppercase tracking-wider transition-all disabled:opacity-50"
           >
-            {loading ? 'Processing...' : mode === 'login' ? 'Login Now (লগইন করুন)' : 'Register Now (নিবন্ধন করুন)'}
+            {loading
+              ? "Processing..."
+              : mode === "login"
+                ? "Login Now (লগইন করুন)"
+                : "Register Now (নিবন্ধন করুন)"}
           </button>
+
+          {mode === "login" && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                  const data = await apiService.login("admin", "password");
+                  onLoginSuccess(data.user);
+                  onClose();
+                } catch (err: any) {
+                  setError(err.message || "Admin login failed");
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              className="w-full py-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-bold rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+            >
+              <ShieldCheck className="w-4 h-4 text-amber-400" />
+              1-Click Admin Quick Login (অ্যাডমিন লগইন)
+            </button>
+          )}
         </form>
 
         {/* Switch mode */}
         <div className="mt-5 text-center text-xs text-slate-400">
-          {mode === 'login' ? (
+          {mode === "login" ? (
             <p>
-              Don't have an account?{' '}
+              Don't have an account?{" "}
               <button
                 type="button"
-                onClick={() => { setMode('register'); setError(null); }}
+                onClick={() => {
+                  setMode("register");
+                  setError(null);
+                }}
                 className="text-cyan-400 hover:text-cyan-300 font-bold underline ml-1"
               >
                 Create Account (নতুন অ্যাকাউন্ট)
@@ -156,10 +206,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </p>
           ) : (
             <p>
-              Already have an account?{' '}
+              Already have an account?{" "}
               <button
                 type="button"
-                onClick={() => { setMode('login'); setError(null); }}
+                onClick={() => {
+                  setMode("login");
+                  setError(null);
+                }}
                 className="text-cyan-400 hover:text-cyan-300 font-bold underline ml-1"
               >
                 Sign In (লগইন করুন)

@@ -1,6 +1,8 @@
 {
-  "name": "My IPTV",
-  "description": "Modern Android TV IPTV application with TiviMate & Netflix inspired UI, M3U playlist parser, EPG TV guide, remote control navigation, and admin panel.",
+  "name": "Remix Remix Remix Remix My IPTV",
+  "description": "Modern Android TV IPTV application with TiviMate \u0026 Netflix inspired UI, M3U playlist parser, EPG TV guide, remote control navigation, and admin panel.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

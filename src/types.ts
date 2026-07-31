@@ -1,17 +1,53 @@
 export type CategoryName =
-  | 'All'
-  | 'Sports'
-  | 'Bangla'
-  | 'India'
-  | 'Entertainment'
-  | 'Kids'
-  | 'News'
-  | 'Movies'
-  | 'Music'
-  | 'Religious'
-  | 'International'
-  | 'Favorites'
-  | 'Recently Watched';
+  | "All"
+  | "Sports"
+  | "Bangla"
+  | "India"
+  | "Entertainment"
+  | "Kids"
+  | "News"
+  | "Music"
+  | "Religious"
+  | "International"
+  | "Favorites"
+  | "Recently Watched";
+
+export interface Episode {
+  id: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string;
+  duration: string;
+  streamUrl: string;
+  thumbnail?: string;
+  description?: string;
+}
+
+export interface SeriesItem {
+  id: string;
+  title: string;
+  banglaTitle?: string;
+  genre: string;
+  description: string;
+  rating: number;
+  year: number;
+  poster: string;
+  banner: string;
+  totalSeasons: number;
+  isPremium: boolean;
+  episodes: Episode[];
+}
+
+export type StreamType = "hls" | "dash" | "ts" | "direct" | "unknown";
+
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "success";
+  category: "Detection" | "Proxy" | "Player" | "Buffer" | "Codec" | "System";
+  message: string;
+  details?: string;
+}
 
 export interface Channel {
   id: string;
@@ -24,6 +60,17 @@ export interface Channel {
   isActive: boolean;
   groupTitle?: string;
   tvgId?: string;
+  tvgName?: string;
+  tvgLogo?: string;
+  tvgLanguage?: string;
+  tvgCountry?: string;
+  catchup?: string;
+  catchupDays?: number;
+  catchupSource?: string;
+  userAgent?: string;
+  referer?: string;
+  httpHeaders?: Record<string, string>;
+  streamType?: StreamType;
 }
 
 export interface EPGProgram {
@@ -32,25 +79,25 @@ export interface EPGProgram {
   title: string;
   description: string;
   startTime: string; // ISO string
-  endTime: string;   // ISO string
+  endTime: string; // ISO string
   category?: string;
 }
 
-export type SubscriptionPlan = 
-  | 'Free' 
-  | '1 Day Pass (৳10)' 
-  | '1 Month Standard (৳45)' 
-  | '1 Month Premium (৳100)' 
-  | '7 Days' 
-  | '30 Days' 
-  | '365 Days' 
-  | 'Expired';
+export type SubscriptionPlan =
+  | "Free"
+  | "1 Day Pass (৳10)"
+  | "1 Month Standard (৳45)"
+  | "1 Month Premium (৳100)"
+  | "7 Days"
+  | "30 Days"
+  | "365 Days"
+  | "Expired";
 
 export interface User {
   id: string;
   username: string;
   email: string;
-  role: 'user' | 'admin';
+  role: "user" | "admin";
   subscriptionPlan: SubscriptionPlan;
   subscriptionExpiresAt: string | null; // ISO string or null for free/unlimited
   favorites: string[]; // array of channelIds
@@ -65,17 +112,27 @@ export interface M3UParseResult {
 }
 
 export interface SettingsConfig {
-  language: 'en' | 'bn' | 'hi' | 'es';
-  theme: 'dark' | 'midnight' | 'oled';
+  language: "en" | "bn" | "hi" | "es";
+  theme: "dark" | "midnight" | "oled";
   autoPlay: boolean;
   autoReconnect: boolean;
   bufferSize: number; // in seconds, e.g. 10, 30, 60
-  streamQuality: 'auto' | '1080p' | '720p' | '480p';
+  streamQuality: "auto" | "1080p" | "720p" | "480p";
+  channelPreloading: boolean;
+  streamProxyEnabled: boolean;
 }
 
-export type ViewMode = 'livetv' | 'movies' | 'series' | 'guide' | 'favorites' | 'recent' | 'search' | 'settings' | 'admin';
+export type ViewMode =
+  | "livetv"
+  | "movies"
+  | "guide"
+  | "favorites"
+  | "recent"
+  | "search"
+  | "settings"
+  | "admin";
 
-export type ThemeId = 'gold' | 'red' | 'cyberpunk' | 'emerald' | 'purple';
+export type ThemeId = "gold" | "red" | "cyberpunk" | "emerald" | "purple";
 
 export interface ThemeConfig {
   id: ThemeId;
@@ -91,4 +148,3 @@ export interface ThemeConfig {
   secondaryText: string;
   previewColor: string;
 }
-
