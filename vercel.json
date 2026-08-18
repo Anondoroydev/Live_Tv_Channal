@@ -1,4 +1,16 @@
 {
+  "version": 2,
   "buildCommand": "npm run build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "functions": {
+    "api/[...path].ts": {
+      "runtime": "nodejs22.x"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/[...path]"
+    }
+  ]
 }
