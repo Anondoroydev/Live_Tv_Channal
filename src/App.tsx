@@ -20,6 +20,8 @@ import { Channel, ViewMode, User, EPGProgram, ThemeId } from "./types";
 import { AlertCircle } from "lucide-react";
 
 import { BlinkWebTVView } from "./components/BlinkWebTVView";
+import { SeriesVodPage } from "./components/SeriesVodPage";
+import { PinLockModal } from "./components/PinLockModal";
 
 export default function App() {
   const [currentView, setCurrentView] = useState<ViewMode>("livetv");
@@ -58,6 +60,99 @@ export default function App() {
   const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Playlist & Category Lock State (Default PIN 0000)
+  const [playlistPin, setPlaylistPin] = useState<string>(() => {
+    try {
+      return localStorage.getItem("myiptv_playlist_pin") || "0000";
+    } catch (e) {
+      return "0000";
+    }
+  });
+  const [unlockedCategories, setUnlockedCategories] = useState<string[]>([]);
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [pinTargetCategory, setPinTargetCategory] = useState<string>("Adult (18+)");
+  const [pendingChannel, setPendingChannel] = useState<Channel | null>(null);
+
+  const isCategoryLocked = useCallback(
+    (catName: string) => {
+      if (
+        !catName ||
+        catName === "All" ||
+        catName === "Watchlist" ||
+        catName === "History" ||
+        catName === "Favorites"
+      )
+        return false;
+      if (currentUser?.hasAdultAccess) return false;
+      if (unlockedCategories.includes(catName)) return false;
+      const lower = catName.toLowerCase();
+      return (
+        lower.includes("adult") ||
+        lower.includes("18+") ||
+        lower.includes("xxx") ||
+        lower.includes("for adult") ||
+        lower.includes("erotic") ||
+        lower.includes("nsfw") ||
+        lower.includes("hot") ||
+        lower.includes("mature") ||
+        lower.includes("blue") ||
+        lower.includes("private") ||
+        lower.includes("porn") ||
+        lower.includes("sex") ||
+        lower.includes("midnight") ||
+        lower.includes("erotica") ||
+        lower.includes("blue film")
+      );
+    },
+    [unlockedCategories, currentUser],
+  );
+
+  const handleSelectCategory = (catName: string) => {
+    if (isCategoryLocked(catName)) {
+      setPinTargetCategory(catName);
+      setPendingChannel(null);
+      setIsPinModalOpen(true);
+      return;
+    }
+    setSelectedCategory(catName);
+  };
+
+  const handleSelectChannel = (channel: Channel) => {
+    if (isCategoryLocked(channel.category)) {
+      setPinTargetCategory(channel.category);
+      setPendingChannel(channel);
+      setIsPinModalOpen(true);
+      return;
+    }
+    setActiveChannel(channel);
+    // If we're not in a special category view, switch to the channel's category
+    if (selectedCategory !== "All" && selectedCategory !== "Watchlist" && selectedCategory !== "History" && selectedCategory !== "Series / VOD" && selectedCategory !== channel.category) {
+       setSelectedCategory(channel.category);
+    }
+    try {
+      localStorage.setItem("myiptv_active_channel", JSON.stringify(channel));
+    } catch (e) {}
+  };
+
+  const handlePinSuccess = () => {
+    setUnlockedCategories((prev) => [...prev, pinTargetCategory]);
+    setSelectedCategory(pinTargetCategory);
+    if (pendingChannel) {
+      setActiveChannel(pendingChannel);
+      try {
+        localStorage.setItem("myiptv_active_channel", JSON.stringify(pendingChannel));
+      } catch (e) {}
+      setPendingChannel(null);
+    }
+  };
+
+  const handleChangePin = (newPin: string) => {
+    setPlaylistPin(newPin);
+    try {
+      localStorage.setItem("myiptv_playlist_pin", newPin);
+    } catch (e) {}
+  };
 
   // TV Remote Focus & Navigation State
   const [isSidebarFocused, setIsSidebarFocused] = useState(false);
@@ -107,13 +202,36 @@ export default function App() {
   const loadInitialData = async () => {
     try {
       const [chs, cats, user] = await Promise.all([
-        apiService.fetchChannels(),
-        apiService.fetchCategories(),
-        apiService.getCurrentUser(),
+        apiService.fetchChannels().catch((err) => {
+          console.warn("fetchChannels error in loadInitialData:", err);
+          return [] as Channel[];
+        }),
+        apiService.fetchCategories().catch((err) => {
+          console.warn("fetchCategories error in loadInitialData:", err);
+          return ["All", "Entertainment", "News", "Sports", "Kids", "Music"];
+        }),
+        apiService.getCurrentUser().catch((err) => {
+          console.warn("getCurrentUser error in loadInitialData:", err);
+          return null;
+        }),
       ]);
 
-      setChannels(chs);
-      setCategories(cats);
+      if (Array.isArray(chs)) {
+        const seenIds = new Set<string>();
+        const uniqueChs = chs.map((c, idx) => {
+          let id = c.id || `channel_${idx + 1}`;
+          if (seenIds.has(id)) {
+            id = `${id}_${idx + 1}`;
+          }
+          seenIds.add(id);
+          return { ...c, id };
+        });
+        setChannels(uniqueChs);
+      } else {
+        setChannels([]);
+      }
+      const catsArray = Array.isArray(cats) ? cats : (cats && Array.isArray((cats as any).categories)) ? (cats as any).categories : ["All", "Sports", "Bangla", "India", "Entertainment", "Kids", "News", "Series / VOD", "Music"];
+      setCategories(catsArray);
 
       if (user) {
         setCurrentUser(user);
@@ -129,34 +247,55 @@ export default function App() {
         return;
       }
 
-      // Try to restore last watched channel from the new list
-      const savedChannelJson = localStorage.getItem("myiptv_active_channel");
-      if (savedChannelJson) {
-        try {
-          const saved = JSON.parse(savedChannelJson) as Channel;
-          const found = chs.find((c) => c.id === saved.id);
-          if (found) {
-            setActiveChannel(found);
-            return;
-          }
-        } catch (e) {}
-      }
-
-      if (chs.length > 0 && !activeChannel) {
-        setActiveChannel(chs[0]);
-      }
+      // Update active channel reference if active or saved in new list
+      setActiveChannel((prev) => {
+        if (prev) {
+          const matched = chs.find((c) => c.id === prev.id || c.name === prev.name);
+          if (matched) return matched;
+        }
+        const savedChannelJson = localStorage.getItem("myiptv_active_channel");
+        if (savedChannelJson) {
+          try {
+            const saved = JSON.parse(savedChannelJson) as Channel;
+            const found = chs.find((c) => c.id === saved.id || c.name === saved.name);
+            if (found) return found;
+          } catch (e) {}
+        }
+        return chs[0] || null;
+      });
     } catch (err: any) {
       console.error("Failed to load initial data:", err);
-      // Try to identify which one failed
-      try {
-        await apiService.fetchCategories();
-      } catch (catErr) {
-        console.error("Specifically failed to fetch categories:", catErr);
-      }
     }
   };
 
   useEffect(() => {
+    // Migrate old settings to enable high-compatibility IPTV proxy by default (essential to bypass CORS and Mixed Content on TV/browsers)
+    try {
+      const saved = localStorage.getItem("myiptv_settings");
+      if (!saved) {
+        // Initial setup if not exists
+        localStorage.setItem("myiptv_settings", JSON.stringify({
+          language: "bn",
+          theme: "dark",
+          autoPlay: true,
+          autoReconnect: true,
+          bufferSize: 30,
+          streamQuality: "auto",
+          channelPreloading: true,
+          streamProxyEnabled: true,
+        }));
+      } else {
+        const parsed = JSON.parse(saved);
+        if (parsed.streamProxyEnabled !== true) {
+          parsed.streamProxyEnabled = true;
+          localStorage.setItem("myiptv_settings", JSON.stringify(parsed));
+          window.dispatchEvent(
+            new CustomEvent("myiptv_settings_updated", { detail: parsed })
+          );
+        }
+      }
+    } catch (e) {}
+
     loadInitialData();
   }, []);
 
@@ -186,85 +325,98 @@ export default function App() {
       });
   }, [activeChannel]);
 
-  // Handle Channel Switch
-  const handleSelectChannel = useCallback((channel: Channel) => {
-    setActiveChannel(channel);
-    try {
-      localStorage.setItem("myiptv_active_channel", JSON.stringify(channel));
-    } catch (e) {}
-  }, []);
-
   const isSubscriptionActive = Boolean(
     currentUser &&
       (currentUser.role === "admin" ||
-        currentUser.subscriptionStatus === "active" ||
-        (currentUser.subscriptionExpiresAt &&
-          new Date(currentUser.subscriptionExpiresAt).getTime() > Date.now())),
+        (currentUser.isApprovedByAdmin === true &&
+          (currentUser.subscriptionStatus === "active" ||
+            (currentUser.subscriptionExpiresAt &&
+              new Date(currentUser.subscriptionExpiresAt).getTime() > Date.now())))),
   );
 
   // Filter channels based on View, Category & Search (Show all channels so free users see VIP lock badges)
-  const filteredChannels = useMemo(() => {
-    let list = channels.filter((c) => c.isActive);
+  let filteredChannels = channels.filter((c) => c.isActive);
 
-    if (
-      currentView === "series" ||
-      selectedCategory === "Series" ||
-      selectedCategory === "Series / VOD"
-    ) {
-      list = list.filter((c) => {
-        const cat = (c.category || "").toLowerCase();
-        const name = (c.name || "").toLowerCase();
-        return (
-          cat.includes("series") ||
-          cat.includes("vod") ||
-          cat.includes("drama") ||
-          name.includes("series") ||
-          name.includes("season")
-        );
-      });
-    } else if (selectedCategory === "Watchlist") {
-      list = list.filter((c) => favorites.includes(c.id));
-    } else if (selectedCategory === "History") {
-      list = list.filter((c) => recentlyWatched.includes(c.id));
-    } else if (selectedCategory !== "All") {
-      const targetCat = selectedCategory.toLowerCase();
-      list = list.filter((c) => (c.category || "").toLowerCase() === targetCat);
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.category.toLowerCase().includes(q) ||
-          c.channelNumber.toString().includes(q),
+  // Handle Series / VOD view specifically - do NOT show regular TV channels here!
+  if (currentView === "series" || selectedCategory === "Series" || selectedCategory === "Series / VOD") {
+    filteredChannels = filteredChannels.filter((c) => {
+      const cat = (c.category || "").toLowerCase();
+      const name = (c.name || "").toLowerCase();
+      return (
+        cat.includes("series") ||
+        cat.includes("season") ||
+        cat.includes("episode") ||
+        cat.includes("vod") ||
+        cat.includes("movie") ||
+        cat.includes("cinema") ||
+        name.includes("series") ||
+        name.includes("season") ||
+        name.includes("movie")
       );
-    }
+    });
+  } else if (currentView === "movies" || selectedCategory === "Movies" || selectedCategory === "VOD") {
+    filteredChannels = filteredChannels.filter((c) => {
+      const cat = (c.category || "").toLowerCase();
+      const name = (c.name || "").toLowerCase();
+      return (
+        cat.includes("vod") ||
+        cat.includes("movie") ||
+        cat.includes("cinema") ||
+        cat.includes("film") ||
+        name.includes("movie")
+      );
+    });
+  } else if (currentView === "livetv" && selectedCategory === "All") {
+    // Hide VODs and Series from Live TV "All" view to prevent clutter
+    filteredChannels = filteredChannels.filter((c) => {
+      const cat = (c.category || "").toLowerCase();
+      return !(cat.includes("vod") || cat.includes("movie") || cat.includes("cinema") || cat.includes("series") || cat.includes("season"));
+    });
+  } else if (selectedCategory === "Watchlist") {
+    filteredChannels = filteredChannels.filter((c) => favorites.includes(c.id));
+  } else if (selectedCategory === "History") {
+    filteredChannels = filteredChannels.filter((c) =>
+      recentlyWatched.includes(c.id),
+    );
+  } else if (selectedCategory !== "All") {
+    filteredChannels = filteredChannels.filter(
+      (c) => (c?.category || "").toLowerCase() === (selectedCategory || "").toLowerCase(),
+    );
+  }
 
-    return list;
-  }, [channels, currentView, selectedCategory, favorites, recentlyWatched, searchQuery]);
+  if (searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    filteredChannels = filteredChannels.filter(
+      (c) =>
+        (c?.name || "").toLowerCase().includes(q) ||
+        (c?.category || "").toLowerCase().includes(q) ||
+        (c?.channelNumber || "").toString().includes(q),
+    );
+  }
 
   const handlePrevChannel = useCallback(() => {
-    setActiveChannel((prevActive) => {
-      const activeList = filteredChannels.length > 0 ? filteredChannels : channels;
-      if (activeList.length === 0) return prevActive;
-      if (!prevActive) return activeList[0];
-      const currentIdx = activeList.findIndex((c) => c.id === prevActive.id || c.name === prevActive.name);
-      const prevIdx = currentIdx === -1 ? 0 : (currentIdx - 1 + activeList.length) % activeList.length;
-      return activeList[prevIdx];
-    });
-  }, [channels, filteredChannels]);
+    const activeList = filteredChannels;
+    if (activeList.length === 0) return;
+    
+    // Find current index, strictly by ID
+    const currentIdx = activeChannel ? activeList.findIndex((c) => c.id === activeChannel.id) : -1;
+    
+    // If not found, start from the last one or first one based on preference
+    const prevIdx = currentIdx <= 0 ? activeList.length - 1 : currentIdx - 1;
+    handleSelectChannel(activeList[prevIdx]);
+  }, [filteredChannels, activeChannel]);
 
   const handleNextChannel = useCallback(() => {
-    setActiveChannel((prevActive) => {
-      const activeList = filteredChannels.length > 0 ? filteredChannels : channels;
-      if (activeList.length === 0) return prevActive;
-      if (!prevActive) return activeList[0];
-      const currentIdx = activeList.findIndex((c) => c.id === prevActive.id || c.name === prevActive.name);
-      const nextIdx = currentIdx === -1 ? 0 : (currentIdx + 1) % activeList.length;
-      return activeList[nextIdx];
-    });
-  }, [channels, filteredChannels]);
+    const activeList = filteredChannels;
+    if (activeList.length === 0) return;
+    
+    // Find current index, strictly by ID
+    const currentIdx = activeChannel ? activeList.findIndex((c) => c.id === activeChannel.id) : -1;
+    
+    // If not found, start from the first one
+    const nextIdx = (currentIdx === -1 || currentIdx === activeList.length - 1) ? 0 : currentIdx + 1;
+    handleSelectChannel(activeList[nextIdx]);
+  }, [filteredChannels, activeChannel]);
 
   // Toggle Favorite
   const handleToggleFavorite = async (channelId: string) => {
@@ -372,13 +524,30 @@ export default function App() {
     <div
       className={`relative h-screen w-screen bg-slate-950 text-white font-sans overflow-hidden select-none`}
     >
-      {/* Primary View: Blink Web TV Live Portal */}
-      <BlinkWebTVView
+      {/* Primary View: Series / VOD Standalone Page OR Blink Web TV Live Portal */}
+      {currentView === "series" ? (
+        <SeriesVodPage
+          onBackToLiveTv={() => setCurrentView("livetv")}
+          isSubscriptionActive={isSubscriptionActive}
+          onOpenSubscription={() => setIsSubscriptionOpen(true)}
+          onOpenLogin={() => setIsLoginOpen(true)}
+          currentUser={currentUser}
+          theme={activeTheme}
+          channels={channels}
+          isCategoryLocked={isCategoryLocked}
+          onUnlockAdult={(catName) => {
+            setPinTargetCategory(catName);
+            setIsPinModalOpen(true);
+          }}
+        />
+      ) : (
+        <BlinkWebTVView
           channels={filteredChannels}
           allChannels={channels}
           categories={categories}
           selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
+          onSelectCategory={handleSelectCategory}
+          isCategoryLocked={isCategoryLocked}
           activeChannel={activeChannel}
           onSelectChannel={handleSelectChannel}
           currentEpg={currentEpg}
@@ -402,6 +571,7 @@ export default function App() {
           recentlyWatched={recentlyWatched}
           onLogout={handleLogout}
         />
+      )}
 
       {/* Admin Panel Modal Overlay */}
       {isAdminOpen && (
@@ -453,9 +623,6 @@ export default function App() {
         onLoginSuccess={(user) => {
           setCurrentUser(user);
           setFavorites(user.favorites || []);
-          if (user.role === "admin") {
-            setIsAdminOpen(true);
-          }
           loadInitialData();
         }}
       />
@@ -489,6 +656,19 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Playlist & Category PIN Lock Modal */}
+      <PinLockModal
+        isOpen={isPinModalOpen}
+        onClose={() => {
+          setIsPinModalOpen(false);
+          setPendingChannel(null);
+        }}
+        onSuccess={handlePinSuccess}
+        targetName={pinTargetCategory}
+        currentPin={playlistPin}
+        onChangePin={handleChangePin}
+      />
     </div>
   );
 }

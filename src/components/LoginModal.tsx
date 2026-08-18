@@ -119,15 +119,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
           <div>
             <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-              Email / Username (ইমেইল বা অ্যাডমিন ইউজারনেম)
+              Email Address (ইমেইল ঠিকানা)
             </label>
             <div className="relative">
               <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
-                type="text"
+                type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="e.g. admin or yourname@gmail.com"
+                placeholder="yourname@gmail.com"
                 required
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-400 transition-colors"
               />
@@ -162,30 +162,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 ? "Login Now (লগইন করুন)"
                 : "Register Now (নিবন্ধন করুন)"}
           </button>
-
-          {mode === "login" && (
-            <button
-              type="button"
-              disabled={loading}
-              onClick={async () => {
-                setLoading(true);
-                setError(null);
-                try {
-                  const data = await apiService.login("admin", "password");
-                  onLoginSuccess(data.user);
-                  onClose();
-                } catch (err: any) {
-                  setError(err.message || "Admin login failed");
-                } finally {
-                  setLoading(false);
-                }
-              }}
-              className="w-full py-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-bold rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
-            >
-              <ShieldCheck className="w-4 h-4 text-amber-400" />
-              1-Click Admin Quick Login (অ্যাডমিন লগইন)
-            </button>
-          )}
         </form>
 
         {/* Switch mode */}

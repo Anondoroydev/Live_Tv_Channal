@@ -8,6 +8,7 @@ import {
   ArrowLeft,
   Smartphone,
   Shield,
+  Clock,
   HelpCircle,
   CheckCircle2,
 } from "lucide-react";
@@ -105,7 +106,13 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
     try {
       // Simulate real-time secure database verification
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      const updated = await apiService.updateSubscription(selectedPlan);
+      const updated = await apiService.updateSubscription(
+        selectedPlan,
+        transactionId,
+        senderNumber,
+        paymentMethod,
+        currentSelectedPlanData.price,
+      );
       onSubscriptionUpdated(updated);
       setPaymentStep("success");
     } catch (err: any) {
@@ -151,14 +158,21 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
             </div>
 
             {/* Current Plan Badge */}
-            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between mb-6">
+            <div className={`p-4 bg-slate-950 rounded-2xl border ${currentUser.subscriptionPlan !== "Free" && currentUser.isApprovedByAdmin === false ? 'border-amber-500/50' : 'border-slate-800'} flex items-center justify-between mb-6`}>
               <div>
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
                   Current Active Plan
                 </p>
-                <p className="text-sm font-black text-cyan-400">
-                  {currentUser.subscriptionPlan}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-black text-cyan-400">
+                    {currentUser.subscriptionPlan}
+                  </p>
+                  {currentUser.subscriptionPlan !== "Free" && currentUser.isApprovedByAdmin === false && (
+                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 border border-amber-500/30">
+                      <Clock size={10} /> Pending Admin Approval
+                    </span>
+                  )}
+                </div>
               </div>
               {currentUser.subscriptionExpiresAt && (
                 <p className="text-xs font-mono text-slate-400">
@@ -216,12 +230,18 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
             </div>
 
             {/* Activate Button */}
-            <button
-              onClick={handleUpgrade}
-              className="w-full py-4 bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 hover:from-amber-400 hover:to-red-400 text-slate-950 font-black rounded-2xl shadow-xl shadow-amber-500/20 text-xs uppercase tracking-widest transition-all"
-            >
-              Order & Pay (প্যাকেজ কিনুন)
-            </button>
+            {currentUser.subscriptionPlan !== "Free" && currentUser.isApprovedByAdmin === false ? (
+              <div className="w-full py-4 bg-slate-800 text-slate-400 font-black rounded-2xl text-xs uppercase tracking-widest text-center border border-slate-700 flex items-center justify-center gap-2">
+                <Clock className="w-4 h-4" /> Please Wait for Admin Approval
+              </div>
+            ) : (
+              <button
+                onClick={handleUpgrade}
+                className="w-full py-4 bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 hover:from-amber-400 hover:to-red-400 text-slate-950 font-black rounded-2xl shadow-xl shadow-amber-500/20 text-xs uppercase tracking-widest transition-all"
+              >
+                Order & Pay (প্যাকেজ কিনুন)
+              </button>
+            )}
           </>
         )}
 
@@ -428,16 +448,16 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
 
         {paymentStep === "success" && (
           <div className="text-center py-6 space-y-4">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/10 animate-in fade-in zoom-in duration-300">
-              <CheckCircle2 className="w-10 h-10" />
+            <div className="w-16 h-16 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10 animate-in fade-in zoom-in duration-300">
+              <Clock className="w-10 h-10" />
             </div>
 
             <div className="space-y-1.5">
               <h3 className="text-xl font-black text-white uppercase tracking-wide">
-                Subscription Activated!
+                Payment Submitted!
               </h3>
-              <p className="text-xs text-emerald-400 font-bold">
-                Transaction verified successfully via{" "}
+              <p className="text-xs text-amber-400 font-bold">
+                Transaction sent successfully via{" "}
                 {paymentMethod === "bkash"
                   ? "bKash"
                   : paymentMethod === "nagad"
@@ -445,10 +465,9 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                     : "Rocket"}
               </p>
               <p className="text-xs text-slate-400 leading-relaxed max-w-sm mx-auto pt-2">
-                Congratulations! Your account is now fully upgraded to{" "}
-                <strong>{currentSelectedPlanData.name}</strong>. Enjoy
-                buffer-free HD streaming on all premium channels and VOD
-                collections!
+                Your payment is currently <strong>Pending Admin Approval</strong>. 
+                Please wait a few moments for our admin to verify your transaction and unlock your 
+                <strong> {currentSelectedPlanData.name}</strong>.
               </p>
             </div>
 
@@ -457,9 +476,9 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                 handleReset();
                 onClose();
               }}
-              className="px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-emerald-500/10"
+              className="px-6 py-2.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-amber-500/10 mt-4"
             >
-              Close & Start Streaming
+              Close & Wait
             </button>
           </div>
         )}

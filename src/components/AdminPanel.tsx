@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Upload,
-  Radio,
   Tv,
   Users,
   ShieldCheck,
@@ -19,6 +18,7 @@ import {
   RefreshCw,
   Hash,
   ListPlus,
+  Clock,
   Link as LinkIcon,
   Server,
   KeyRound,
@@ -30,9 +30,10 @@ import {
   X,
 } from "lucide-react";
 import { List } from "react-window";
-import { AutoSizer } from "react-virtualized-auto-sizer";
+
 import { apiService } from "../services/api";
 import { Channel, User, SubscriptionPlan } from "../types";
+import PaymentTable from "./admin/PaymentTable";
 
 interface AdminPanelProps {
   onDataChanged?: () => void;
@@ -40,7 +41,7 @@ interface AdminPanelProps {
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "m3u" | "xtream" | "mac" | "m3u_url" | "channels" | "users"
+    "dashboard" | "m3u" | "xtream" | "m3u_url" | "channels" | "users" | "payments"
   >("dashboard");
   const [stats, setStats] = useState<{
     totalChannels: number;
@@ -82,18 +83,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
   const [xtreamUser, setXtreamUser] = useState("");
   const [xtreamPass, setXtreamPass] = useState("");
 
-  // MAC Portal State
-  const [macPortalUrl, setMacPortalUrl] = useState("");
-  const [macAddress, setMacAddress] = useState("");
-
-  const [overwritePlaylist, setOverwritePlaylist] = useState(true);
+  const [overwritePlaylist, setOverwritePlaylist] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
   const [uploadErrorMsg, setUploadErrorMsg] = useState<string | null>(null);
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [startNumber, setStartNumber] = useState(101);
+  const [startNumber, setStartNumber] = useState(0);
 
   // Search/filter states for tables
   const [channelSearch, setChannelSearch] = useState("");
@@ -108,7 +105,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
   >(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  const loadData = async () => {
+  const loadData = async (notifyParent = true) => {
     try {
       const [s, chsData, us, pSource] = await Promise.all([
         apiService.adminFetchStats(),
@@ -120,13 +117,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
       setChannels(chsData.channels || []);
       setUsers(us);
       if (pSource) setPlaylistSource(pSource);
+      if (notifyParent) {
+        onDataChanged?.();
+      }
     } catch (err: any) {
       console.error("Failed to load admin data", err);
     }
   };
 
   useEffect(() => {
-    loadData();
+    loadData(false);
   }, []);
 
   // Handle M3U Text or File Upload Parsing
@@ -262,29 +262,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
     }
   };
 
-  const handleMacConnect = async () => {
-    if (!macPortalUrl.trim() || !macAddress.trim()) {
-      setUploadErrorMsg("Please provide both Portal URL and MAC Address.");
-      return;
-    }
-    setUploadLoading(true);
-    setUploadSuccessMsg(null);
-    setUploadErrorMsg(null);
-    try {
-      const res = await apiService.importMacPortal(
-        macPortalUrl,
-        macAddress,
-        overwritePlaylist,
-      );
-      setUploadSuccessMsg(res.message);
-      loadData();
-    } catch (err: any) {
-      setUploadErrorMsg(err.message || "Failed to connect MAC / Stalker portal");
-    } finally {
-      setUploadLoading(false);
-    }
-  };
-
   const handleToggleChannelActive = async (channel: Channel) => {
     try {
       await apiService.adminUpdateChannel(channel.id, {
@@ -350,6 +327,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
     }
   };
 
+  const handleUserAdultAccessChange = async (
+    userId: string,
+    hasAdultAccess: boolean,
+  ) => {
+    try {
+      await apiService.adminUpdateUserAdultAccess(userId, hasAdultAccess);
+      setUploadSuccessMsg(`Adult access ${hasAdultAccess ? 'enabled' : 'restricted'} for user.`);
+      setTimeout(() => setUploadSuccessMsg(""), 3000);
+      loadData();
+    } catch (err: any) {
+      setUploadErrorMsg(err.message || "Failed to update adult access");
+      setTimeout(() => setUploadErrorMsg(""), 3000);
+    }
+  };
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim()) return alert("Username is required");
@@ -393,6 +385,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
     }
   };
 
+  const handleResetDefaultChannels = async () => {
+    try {
+      setUploadLoading(true);
+      const res = await apiService.adminResetDefaultChannels();
+      setUploadSuccessMsg(res.message);
+      await loadData();
+      onDataChanged?.();
+    } catch (err: any) {
+      setUploadErrorMsg(err.message || "Failed to restore default channels");
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
   const sampleM3U = `#EXTM3U
 #EXTINF:-1 tvg-id="atn.bd" tvg-name="ATN Bangla" tvg-logo="https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=200" group-title="Bangla",ATN Bangla
 https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
@@ -402,18 +408,18 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlaze
 https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4`;
 
   // Filter channels based on search
-  const filteredChannels = channels.filter(
+  const filteredChannels = (channels || []).filter(
     (ch) =>
-      ch.name.toLowerCase().includes(channelSearch.toLowerCase()) ||
-      ch.category.toLowerCase().includes(channelSearch.toLowerCase()) ||
-      String(ch.channelNumber).includes(channelSearch),
+      (ch?.name || "").toLowerCase().includes((channelSearch || "").toLowerCase()) ||
+      (ch?.category || "").toLowerCase().includes((channelSearch || "").toLowerCase()) ||
+      String(ch?.channelNumber || "").includes(channelSearch || ""),
   );
 
   // Filter users based on search
-  const filteredUsers = users.filter(
+  const filteredUsers = (users || []).filter(
     (u) =>
-      u.username.toLowerCase().includes(userSearch.toLowerCase()) ||
-      (u.email && u.email.toLowerCase().includes(userSearch.toLowerCase())),
+      (u?.username || "").toLowerCase().includes((userSearch || "").toLowerCase()) ||
+      (u?.email && typeof u.email === "string" && u.email.toLowerCase().includes((userSearch || "").toLowerCase())),
   );
 
   const ChannelRow = useCallback(({
@@ -582,21 +588,6 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
 
           <button
             onClick={() => {
-              setActiveTab("mac");
-              setUploadSuccessMsg(null);
-              setUploadErrorMsg(null);
-            }}
-            className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 uppercase tracking-wide ${
-              activeTab === "mac"
-                ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/10"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/30"
-            }`}
-          >
-            <Radio className="w-3.5 h-3.5" /> MAC / Stalker
-          </button>
-
-          <button
-            onClick={() => {
               setActiveTab("channels");
               setUploadSuccessMsg(null);
               setUploadErrorMsg(null);
@@ -623,6 +614,21 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
             }`}
           >
             <Users className="w-3.5 h-3.5" /> Subscribers ({users.length})
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("payments");
+              setUploadSuccessMsg(null);
+              setUploadErrorMsg(null);
+            }}
+            className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 uppercase tracking-wide ${
+              activeTab === "payments"
+                ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/10"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/30"
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" /> Payments
           </button>
         </div>
       </div>
@@ -774,26 +780,37 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
               Xtream connections, and manually added channels. The database will
               be formatted and reset to factory default channels only.
             </p>
-            <button
-              onClick={async () => {
-                if (
-                  window.confirm(
-                    "Are you absolutely sure? This will FORMAT the database and reset all channels to defaults.",
-                  )
-                ) {
-                  try {
-                    await apiService.resetDatabase();
-                    alert("Database formatted successfully!");
-                    loadData();
-                  } catch (err: any) {
-                    alert(err.message);
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={handleResetDefaultChannels}
+                disabled={uploadLoading}
+                className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all flex items-center gap-2 shadow-md shadow-amber-500/10 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${uploadLoading ? "animate-spin" : ""}`} />
+                Restore Verified Default Working Channels
+              </button>
+
+              <button
+                onClick={async () => {
+                  if (
+                    window.confirm(
+                      "Are you absolutely sure? This will FORMAT the database and reset all channels to defaults.",
+                    )
+                  ) {
+                    try {
+                      await apiService.resetDatabase();
+                      alert("Database formatted successfully!");
+                      loadData();
+                    } catch (err: any) {
+                      alert(err.message);
+                    }
                   }
-                }
-              }}
-              className="px-4 py-2 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-500 hover:text-white font-black rounded-lg text-xs uppercase tracking-wider transition-all"
-            >
-              Format & Reset Database ✕
-            </button>
+                }}
+                className="px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500 border border-rose-500/30 text-rose-500 hover:text-white font-black rounded-xl text-xs uppercase tracking-wider transition-all"
+              >
+                Format & Reset Database ✕
+              </button>
+            </div>
           </div>
 
           {/* Quick Business Tips banner */}
@@ -1055,16 +1072,19 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
             </p>
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">
-                M3U Playlist Subscription Link (HTTP/HTTPS)
+              <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wide">
+                M3U Playlist Subscription Link(s) (HTTP/HTTPS)
               </label>
-              <input
-                type="text"
+              <textarea
                 value={m3uUrlInput}
                 onChange={(e) => setM3uUrlInput(e.target.value)}
-                placeholder="https://example-iptv.com/get.php?username=XXX&password=YYY&type=m3u_plus"
-                className="w-full bg-slate-950 border border-slate-800/80 rounded-xl px-4 py-3 text-xs text-amber-400 font-mono focus:outline-none focus:border-amber-500"
+                rows={4}
+                placeholder="https://example-iptv.com/get.php?username=XXX&password=YYY&type=m3u_plus&#10;https://another-provider.com/playlist.m3u"
+                className="w-full bg-slate-950 border border-slate-800/80 rounded-2xl px-4 py-3.5 text-xs text-amber-400 font-mono focus:outline-none focus:border-amber-500 transition-all placeholder:text-slate-700"
               />
+              <p className="text-[10px] text-slate-500 mt-2 italic">
+                * You can now add multiple URLs! Just separate them with newlines or commas. The system will fetch and merge channels from all provided sources.
+              </p>
             </div>
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
@@ -1216,87 +1236,6 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
         </div>
       )}
 
-      {/* MAC / STALKER PORTAL TAB */}
-      {activeTab === "mac" && (
-        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-          <div className="bg-slate-900/60 border border-slate-800/70 p-5 rounded-2xl space-y-4 shadow-md">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
-              <div>
-                <h3 className="text-sm font-black text-slate-200 uppercase tracking-wide flex items-center gap-2">
-                  <Radio className="w-4.5 h-4.5 text-amber-400" /> MAC / Stalker
-                  Portal Authentication
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Connect MAG/STB portals using Portal URL and MAC Address (e.g. 00:1A:79:...).
-                </p>
-              </div>
-              <span className="px-2.5 py-1 bg-amber-500/10 text-amber-400 text-[10px] font-mono font-bold rounded-lg border border-amber-500/20 uppercase tracking-wider">
-                MAC Portal
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                  Portal URL (STB / C.PHP)
-                </label>
-                <input
-                  type="text"
-                  value={macPortalUrl}
-                  onChange={(e) => setMacPortalUrl(e.target.value)}
-                  placeholder="e.g. http://portal.example.com/c.php"
-                  className="w-full bg-slate-950 border border-slate-800/80 rounded-xl px-3 py-2.5 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                  MAC Address
-                </label>
-                <input
-                  type="text"
-                  value={macAddress}
-                  onChange={(e) => setMacAddress(e.target.value)}
-                  placeholder="e.g. 00:1A:79:AB:CD:EF"
-                  className="w-full bg-slate-950 border border-slate-800/80 rounded-xl px-3 py-2.5 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2.5 text-xs font-bold text-slate-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={overwritePlaylist}
-                    onChange={(e) => setOverwritePlaylist(e.target.checked)}
-                    className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-800 focus:ring-0 cursor-pointer"
-                  />
-                  <span>Delete previous entries and sync</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={handleClearChannels}
-                  className="text-[10px] font-black text-rose-400 bg-rose-500/5 hover:bg-rose-500/10 px-3 py-1 rounded-lg border border-rose-500/20 transition-all uppercase tracking-wider cursor-pointer"
-                >
-                  Clear All Channels
-                </button>
-              </div>
-
-              <button
-                onClick={handleMacConnect}
-                disabled={uploadLoading}
-                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all disabled:opacity-50"
-              >
-                {uploadLoading
-                  ? "Authenticating MAC Portal..."
-                  : "Connect & Sync MAC Portal"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* CHANNELS MANAGER TAB */}
       {activeTab === "channels" && (
         <div className="flex-1 flex flex-col min-h-0 space-y-3.5">
@@ -1338,8 +1277,8 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col h-full">
-                <div className="flex items-center bg-slate-900/80 text-slate-400 font-extrabold uppercase tracking-wider border-b border-slate-800 px-3 py-2 text-[9px]">
+              <div className="flex flex-col h-full overflow-x-auto scrollbar-thin">
+                <div className="flex items-center bg-slate-900/80 text-slate-400 font-extrabold uppercase tracking-wider border-b border-slate-800 px-3 py-2 text-[9px] min-w-[700px]">
                   <div className="w-12 shrink-0">Digit</div>
                   <div className="w-12 shrink-0">Logo</div>
                   <div className="flex-1 pr-4">Channel Stream Title</div>
@@ -1348,23 +1287,25 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                   <div className="w-24 shrink-0">View Status</div>
                   <div className="w-20 shrink-0 text-right">Action</div>
                 </div>
-                <div className="flex-1 min-h-0">
-                  <AutoSizer
-                    renderProp={({ height, width }) => (
-                      <List
-                        height={height || 0}
-                        rowCount={filteredChannels.length}
-                        rowHeight={44}
-                        width={width || 0}
-                        rowComponent={ChannelRow}
-                        rowProps={{}}
-                      />
-                    )}
+                <div className="flex-1 min-h-0 min-w-[700px]">
+                  <List
+                    className="w-full h-full"
+                    rowCount={filteredChannels.length}
+                    rowHeight={44}
+                    rowComponent={ChannelRow as any}
+                    rowProps={{}}
                   />
                 </div>
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* PAYMENTS MANAGER TAB */}
+      {activeTab === "payments" && (
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-3.5 pr-1">
+          <PaymentTable />
         </div>
       )}
 
@@ -1397,16 +1338,16 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto border border-slate-800/80 rounded-2xl bg-slate-950/60 shadow-sm min-h-0">
+          <div className="flex-1 overflow-x-auto scrollbar-thin border border-slate-800/80 rounded-2xl bg-slate-950/60 shadow-sm min-h-0">
             {filteredUsers.length === 0 ? (
-              <div className="py-12 text-center">
+              <div className="py-12 text-center min-w-[800px]">
                 <Users className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                 <p className="text-xs text-slate-400 font-bold">
                   No active users matched your search criteria.
                 </p>
               </div>
             ) : (
-              <table className="w-full text-left text-xs border-collapse">
+              <table className="w-full text-left text-xs border-collapse min-w-[800px]">
                 <thead className="bg-slate-900/80 text-slate-400 font-extrabold uppercase tracking-wider border-b border-slate-800 sticky top-0 z-10">
                   <tr>
                     <th className="p-3 text-[10px]">Client / Username</th>
@@ -1415,17 +1356,19 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                     <th className="p-3 text-[10px]">Active Plan Tier</th>
                     <th className="p-3 text-[10px]">Expires Date</th>
                     <th className="p-3 text-[10px]">Update Plan Limit</th>
+                    <th className="p-3 text-[10px]">Payment Verification</th>
+                    <th className="p-3 text-[10px]">Adult Access (18+)</th>
                     <th className="p-3 text-[10px] text-right">Delete</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/40 font-medium">
-                  {filteredUsers.map((u) => (
+                  {filteredUsers.map((u, idx) => (
                     <tr
-                      key={u.id}
+                      key={u.id ? `user-${u.id}-${idx}` : `user-idx-${idx}`}
                       className="hover:bg-slate-900/50 transition-colors"
                     >
                       <td className="p-3 font-bold text-slate-100 flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                        <span className={`w-1.5 h-1.5 rounded-full ${u.isApprovedByAdmin ? "bg-emerald-400" : "bg-rose-400"}`} />
                         {u.username}
                       </td>
                       <td className="p-3 text-slate-400 font-mono text-[11px]">
@@ -1439,9 +1382,15 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                         </span>
                       </td>
                       <td className="p-3">
-                        <span className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded font-bold text-amber-300 font-mono text-[11px]">
-                          {u.subscriptionPlan}
-                        </span>
+                        {u.subscriptionPlan !== "Free" && u.isApprovedByAdmin === false ? (
+                          <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 rounded font-bold text-amber-400 font-mono text-[11px] flex items-center gap-1 w-max">
+                            <Clock size={10} className="animate-pulse" /> Pending
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded font-bold text-amber-300 font-mono text-[11px]">
+                            {u.subscriptionPlan}
+                          </span>
+                        )}
                       </td>
                       <td className="p-3 text-slate-400 font-mono text-[11px]">
                         {u.subscriptionExpiresAt
@@ -1474,6 +1423,36 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                           <option value="365 Days">365 Days Unlimited</option>
                           <option value="Expired">Expired</option>
                         </select>
+                      </td>
+                      <td className="p-3">
+                        {u.isApprovedByAdmin ? (
+                          <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold uppercase flex items-center gap-1 w-max">
+                            <CheckCircle2 size={11} /> Approved
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setActiveTab("payments")}
+                            className="px-2.5 py-1 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm hover:scale-105"
+                            title="Go to Payments tab to verify & approve transaction ID"
+                          >
+                            <Clock size={11} className="text-amber-400 animate-pulse" /> Verify Payment
+                          </button>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <button
+                          onClick={() =>
+                            handleUserAdultAccessChange(u.id, !u.hasAdultAccess)
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            u.hasAdultAccess
+                              ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30"
+                              : "bg-slate-900 text-slate-400 border border-slate-800 hover:bg-slate-800"
+                          }`}
+                          title="Click to toggle adult content permission"
+                        >
+                          {u.hasAdultAccess ? "Allowed (On)" : "Restricted (Off)"}
+                        </button>
                       </td>
                       <td className="p-3 text-right">
                         {u.role !== "admin" ? (

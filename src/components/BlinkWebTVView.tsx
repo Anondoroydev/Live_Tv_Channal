@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { List } from "react-window";
+
 import {
   Tv,
   Heart,
@@ -32,6 +32,7 @@ interface BlinkWebTVViewProps {
   categories: string[];
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
+  isCategoryLocked?: (cat: string) => boolean;
   activeChannel: Channel | null;
   onSelectChannel: (channel: Channel) => void;
   currentEpg: EPGProgram | null;
@@ -62,6 +63,7 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
   categories,
   selectedCategory,
   onSelectCategory,
+  isCategoryLocked,
   activeChannel,
   onSelectChannel,
   currentEpg,
@@ -86,33 +88,82 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
   onLogout,
 }) => {
   const theme = THEMES[currentTheme] || THEMES.gold;
-  const [filterQuery, setFilterQuery] = useState("");
   const channelListRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(60);
 
-  // Auto scroll channel list to top whenever active channel or category changes
+  // Scroll to top when category changes
   useEffect(() => {
     if (channelListRef.current) {
       channelListRef.current.scrollTo({ top: 0, behavior: "smooth" });
     }
-  }, [activeChannel?.id, selectedCategory]);
+  }, [selectedCategory]);
 
   const isSubscriptionActive =
     !!currentUser &&
     (currentUser.role === "admin" ||
-      (currentUser.subscriptionPlan !== "Free" &&
+      (currentUser.isApprovedByAdmin === true &&
+        currentUser.subscriptionPlan !== "Free" &&
         currentUser.subscriptionPlan !== "Expired" &&
         (!currentUser.subscriptionExpiresAt ||
           new Date(currentUser.subscriptionExpiresAt).getTime() > Date.now())));
 
   const displayChannels = useMemo(() => {
+    const q = (searchQuery || "").toLowerCase();
     return channels.filter((c) => {
-      return filterQuery
-        ? c.name.toLowerCase().includes(filterQuery.toLowerCase()) ||
-          c.channelNumber.toString().includes(filterQuery) ||
-          c.category.toLowerCase().includes(filterQuery.toLowerCase())
+      if (!c) return false;
+      return q
+        ? (c.name || "").toLowerCase().includes(q) ||
+          (c.channelNumber || "").toString().includes(q) ||
+          (c.category || "").toLowerCase().includes(q)
         : true;
     });
-  }, [channels, filterQuery]);
+  }, [channels, searchQuery]);
+
+  // Lazy loading: slice displayChannels to only show visibleCount items
+  const visibleChannels = useMemo(() => {
+    return displayChannels.slice(0, visibleCount);
+  }, [displayChannels, visibleCount]);
+
+  // Reset lazy load count on search/category change
+  useEffect(() => {
+    setVisibleCount(60);
+  }, [selectedCategory, searchQuery]);
+
+  // Automatically expand visibleCount if activeChannel is beyond the current visible window
+  useEffect(() => {
+    if (activeChannel) {
+      const activeIdx = displayChannels.findIndex((c) => c.id === activeChannel.id);
+      if (activeIdx !== -1 && activeIdx >= visibleCount) {
+        setVisibleCount(activeIdx + 20);
+      }
+    }
+  }, [activeChannel, displayChannels, visibleCount]);
+
+  // Scroll-based infinite loading handler
+  useEffect(() => {
+    const el = channelListRef.current;
+    if (!el) return;
+
+    const handleScroll = () => {
+      // Scrolled near bottom (within 250px)
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 250) {
+        setVisibleCount((prev) => Math.min(prev + 60, displayChannels.length));
+      }
+    };
+
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, [displayChannels.length]);
+
+  // Auto scroll active channel into view when activeChannel changes
+  useEffect(() => {
+    if (channelListRef.current && activeChannel) {
+      const activeEl = channelListRef.current.querySelector(`[data-channel-id="${activeChannel.id}"]`);
+      if (activeEl) {
+        activeEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+  }, [activeChannel?.id]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -139,7 +190,7 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
     const isFav = favorites.includes(ch.id);
 
     return (
-      <div style={{ ...style, paddingBottom: 6 }} className="px-1">
+      <div style={{ ...style, paddingBottom: 6 }} className="px-1" data-channel-id={ch.id}>
         <div
           onClick={() => onSelectChannel(ch)}
           className={`h-full p-2 rounded-xl sm:rounded-2xl border transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer select-none group min-w-0 ${
@@ -204,6 +255,11 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
 
           {/* Right Actions */}
           <div className="flex flex-col items-end gap-1 shrink-0 ml-1">
+            {isCategoryLocked && isCategoryLocked(ch.category) && (
+              <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black px-1.5 py-0.5 rounded border border-rose-500/30 flex items-center gap-0.5 shrink-0 animate-pulse">
+                <Lock className="w-2 h-2" /> PIN LOCKED
+              </span>
+            )}
             {ch.isPremium ? (
               isSubscriptionActive ? (
                 <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 shrink-0">
@@ -237,14 +293,14 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
         </div>
       </div>
     );
-  }, [displayChannels, activeChannel, favorites, onSelectChannel, onToggleFavorite, theme, isSubscriptionActive, currentEpg]);
+  }, [displayChannels, activeChannel, favorites, onSelectChannel, onToggleFavorite, theme, isSubscriptionActive, currentEpg, isCategoryLocked]);
 
   return (
     <div
       className={`flex flex-col h-screen w-screen bg-gradient-to-br ${theme.bgGradient} text-white font-sans overflow-hidden select-none`}
     >
       {/* 🌟 TOP WEB TV PORTAL GLASS HEADER */}
-      <header className="h-14 sm:h-16 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-xl px-3 sm:px-4 flex items-center justify-between shrink-0 z-40 shadow-2xl">
+      <header className="h-14 sm:h-16 border-b border-slate-800/80 bg-slate-950 px-3 sm:px-4 flex items-center justify-between shrink-0 z-40 shadow-2xl">
         {/* Left: Brand Logo & Status */}
         <div className="flex items-center gap-2 sm:gap-4 shrink-0 min-w-0">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
@@ -276,14 +332,15 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
         </div>
 
         {/* Right: Theme Selector, Time & User */}
-        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-3 shrink-0">
           {/* Admin Control Link - Visible for admin only */}
           {currentUser?.role === "admin" && (
             <button
               onClick={onOpenAdmin}
-              className="px-2.5 sm:px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] sm:text-xs uppercase tracking-wider shadow-lg rounded-xl flex items-center gap-1 hover:scale-105 transition-transform shrink-0"
+              className="px-2.5 sm:px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] sm:text-xs uppercase tracking-wider shadow-lg rounded-xl flex items-center gap-2 hover:scale-105 transition-all active:scale-95 shrink-0"
             >
-              <span>Admin Console</span>
+              <Shield className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">Admin Panel</span>
             </button>
           )}
 
@@ -293,7 +350,7 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
             className={`p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border ${theme.accentBorder} text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm`}
             title="Customize Theme Colors"
           >
-            <Palette className={`w-4 h-4 ${theme.accentText}`} />
+            <Palette className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${theme.accentText}`} />
             <span className="hidden md:inline font-extrabold uppercase text-[10px]">
               {currentTheme}
             </span>
@@ -305,7 +362,7 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
             className={`p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border ${theme.accentBorder} text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm`}
             title="Application Settings"
           >
-            <Settings className={`w-4 h-4 ${theme.accentText}`} />
+            <Settings className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${theme.accentText}`} />
             <span className="hidden md:inline font-extrabold uppercase text-[10px]">
               Settings
             </span>
@@ -319,13 +376,24 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
 
           {/* User Profile or VIP Badge */}
           {currentUser ? (
-            <button
-              onClick={onOpenSubscription}
-              className={`px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-xl bg-gradient-to-r ${theme.accentGradient} text-slate-950 font-black text-[10px] sm:text-xs uppercase tracking-wider shadow-lg flex items-center gap-1 hover:scale-105 transition-transform shrink-0`}
-            >
-              <Zap className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-slate-950" />
-              <span>VIP</span>
-            </button>
+            currentUser.subscriptionPlan !== "Free" && currentUser.isApprovedByAdmin === false ? (
+              <button
+                onClick={onOpenSubscription}
+                className="px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 font-black text-[10px] sm:text-xs uppercase tracking-wider shadow-lg flex items-center gap-1 hover:bg-amber-500/30 transition-colors shrink-0"
+                title="Your payment is pending admin approval"
+              >
+                <Clock className="w-3 h-3 sm:w-3.5 sm:h-3.5 animate-pulse" />
+                <span>PENDING</span>
+              </button>
+            ) : (
+              <button
+                onClick={onOpenSubscription}
+                className={`px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-xl bg-gradient-to-r ${theme.accentGradient} text-slate-950 font-black text-[10px] sm:text-xs uppercase tracking-wider shadow-lg flex items-center gap-1 hover:scale-105 transition-transform shrink-0`}
+              >
+                <Zap className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-slate-950" />
+                <span>VIP</span>
+              </button>
+            )
           ) : (
             <button
               onClick={onOpenLogin}
@@ -371,6 +439,21 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
 
           <button
             onClick={() => {
+              onSelectCategory("All");
+              onSelectView("series");
+            }}
+            className={`px-3 py-1 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all ${
+              (selectedCategory === "All" || selectedCategory === "Entertainment") && currentView === "series"
+                ? `bg-gradient-to-r ${theme.accentGradient} text-slate-950 shadow-md`
+                : "bg-slate-900 text-slate-300 hover:text-white border border-slate-800 hover:border-slate-700"
+            }`}
+          >
+            <Clapperboard className="w-3.5 h-3.5" />
+            <span>Series / VOD</span>
+          </button>
+
+          <button
+            onClick={() => {
               onSelectCategory("Watchlist");
               onSelectView("favorites");
             }}
@@ -387,30 +470,33 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
       </nav>
 
       {/* 📺 RESPONSIVE PORTAL MAIN CONTAINER */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden p-1.5 sm:p-3 gap-1.5 sm:gap-3">
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden p-1.5 sm:p-3 gap-2 lg:gap-4 lg:px-4">
         {/* COLUMN 1: CATEGORIES RAIL (Desktop Sidebar / Mobile Horizontal Scroll Bar) */}
-        <aside className="w-full lg:w-56 xl:w-60 bg-slate-950/90 border border-slate-800/80 rounded-xl sm:rounded-2xl p-2 sm:p-2.5 shrink-0 overflow-hidden shadow-xl backdrop-blur-md flex flex-col h-auto max-h-[120px] lg:max-h-none lg:h-full order-2 lg:order-1">
+        <aside className="w-full lg:w-52 xl:w-64 bg-slate-950 border border-slate-800 rounded-xl sm:rounded-2xl p-2 sm:p-3 shrink-0 overflow-hidden shadow-xl flex flex-col h-auto max-h-[100px] sm:max-h-[120px] lg:max-h-none lg:h-full order-2 lg:order-1">
           <div className="flex items-center justify-between px-2 mb-1 sm:mb-2 pb-1 border-b border-slate-800/80 shrink-0">
             <span className="text-[9px] sm:text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
               <ListFilter className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-400" />{" "}
               CATEGORIES
             </span>
             <span className="text-[9px] sm:text-[10px] font-bold text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded-md">
-              {categories.length + 3}
+              {(Array.isArray(categories) ? categories.length : 0) + 3}
             </span>
           </div>
 
           {/* Desktop Vertical List / Mobile Horizontal Scroll */}
           <div className="flex lg:flex-col overflow-x-auto lg:overflow-x-hidden lg:overflow-y-auto gap-1.5 pr-1 scrollbar-none lg:scrollbar-thin pb-1 lg:pb-0">
             {(() => {
-              const uniqueCats = ["All", "Watchlist", "History"];
-              const lowerCats = new Set(["all", "movies", "watchlist", "history"]);
+              const uniqueCats = ["All", "Series / VOD", "Watchlist", "History"];
+              const lowerCats = new Set(["all", "series / vod", "movies", "watchlist", "history"]);
+              const safeCatList = Array.isArray(categories) ? categories : [];
 
-              categories.forEach((c) => {
-                const trimmed = c.trim();
-                if (trimmed && trimmed.toLowerCase() !== "movies" && !lowerCats.has(trimmed.toLowerCase())) {
-                  uniqueCats.push(trimmed);
-                  lowerCats.add(trimmed.toLowerCase());
+              safeCatList.forEach((c) => {
+                if (typeof c === "string") {
+                  const trimmed = c.trim();
+                  if (trimmed && trimmed.toLowerCase() !== "movies" && !lowerCats.has(trimmed.toLowerCase())) {
+                    uniqueCats.push(trimmed);
+                    lowerCats.add(trimmed.toLowerCase());
+                  }
                 }
               });
 
@@ -418,12 +504,17 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
             })().map((cat) => {
               const isSelected = selectedCategory === cat;
               const count = getCategoryCount(cat);
+              const isLocked = isCategoryLocked ? isCategoryLocked(cat) : false;
 
               return (
                 <button
                   key={`blink-cat-${cat}`}
                   onClick={() => {
-                    onSelectCategory(cat);
+                    if (cat === "Series / VOD") {
+                      onSelectView("series");
+                    } else {
+                      onSelectCategory(cat);
+                    }
                   }}
                   className={`px-3 py-1.5 sm:py-2.5 rounded-xl text-xs font-bold text-left transition-all duration-200 flex items-center justify-between gap-2 shrink-0 group ${
                     isSelected
@@ -432,6 +523,8 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
                   }`}
                 >
                   <span className="truncate max-w-[120px] sm:max-w-none flex items-center gap-1.5">
+                    {cat === "Series / VOD" && <Clapperboard className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                    {isLocked && <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-pulse" />}
                     {cat === "All" ? "All Channels" : cat}
                   </span>
                   <span
@@ -450,20 +543,20 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
         </aside>
 
         {/* COLUMN 2: CHANNEL LIST STREAM PANEL */}
-        <section className="w-full lg:w-72 xl:w-80 bg-slate-950/90 border border-slate-800/80 rounded-xl sm:rounded-2xl flex flex-col p-1.5 sm:p-2.5 shrink-0 lg:shrink-0 overflow-hidden shadow-xl backdrop-blur-md h-[450px] lg:h-full order-3 lg:order-2">
+        <section className="w-full lg:w-64 xl:w-80 bg-slate-950 border border-slate-800 rounded-xl sm:rounded-2xl flex flex-col p-1.5 sm:p-3 shrink-0 lg:shrink-0 overflow-hidden shadow-xl flex-1 lg:flex-none h-[400px] xs:h-[450px] sm:h-[500px] lg:h-full order-3 lg:order-2">
           {/* Search Header */}
           <div className="relative mb-2 shrink-0">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={`Search ${displayChannels.length} channels...`}
               className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 font-medium"
             />
-            {filterQuery && (
+            {searchQuery && (
               <button
-                onClick={() => setFilterQuery("")}
+                onClick={() => setSearchQuery("")}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-white"
               >
                 ✕
@@ -499,20 +592,12 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
           {/* Channel Scroll List */}
           <div
             ref={channelListRef}
-            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 scrollbar-thin touch-pan-y pointer-events-auto"
+            className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent"
           >
-            {displayChannels.length > 0 ? (
-              <div className="h-full w-full min-h-[500px]">
-                <List
-                  height={550}
-                  rowCount={displayChannels.length}
-                  rowHeight={78}
-                  width="100%"
-                  rowComponent={ChannelItem}
-                  rowProps={{}}
-                  className="scrollbar-thin"
-                />
-              </div>
+            {visibleChannels.length > 0 ? (
+              visibleChannels.map((ch, index) => (
+                <ChannelItem key={`${ch.id}_${index}`} index={index} style={{ height: 72 }} />
+              ))
             ) : (
               <div className="flex flex-col items-center justify-center p-6 text-center my-auto min-h-[200px] border border-dashed border-slate-800/80 rounded-2xl bg-slate-900/30">
                 <Clapperboard className="w-9 h-9 text-slate-500 mb-2" />
@@ -532,9 +617,9 @@ export const BlinkWebTVView: React.FC<BlinkWebTVViewProps> = ({
         </section>
 
         {/* COLUMN 3: MAIN CINEMA PLAYER STAGE & EPG DASHBOARD */}
-        <main className="flex-1 bg-slate-950/90 border border-slate-800/80 rounded-xl sm:rounded-2xl p-2 sm:p-4 flex flex-col gap-3 overflow-y-auto shadow-2xl backdrop-blur-md min-w-0 order-1 lg:order-3">
+        <main className="w-full lg:flex-1 bg-slate-950 border border-slate-800 rounded-xl sm:rounded-2xl p-2 sm:p-4 xl:p-6 flex flex-col gap-4 overflow-hidden shadow-2xl min-w-0 order-1 lg:order-3">
           {/* Video Player Container */}
-          <div className="w-full aspect-video sm:h-80 lg:h-[400px] xl:h-[440px] rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-black relative shadow-2xl shrink-0">
+          <div className="w-full aspect-[16/9] sm:aspect-[16/10] xl:aspect-video rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-black relative shadow-2xl shadow-blue-500/10 shrink-0 ring-1 ring-white/10">
             <VideoPlayer
               channel={activeChannel}
               currentEpg={currentEpg}

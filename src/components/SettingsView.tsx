@@ -249,6 +249,26 @@ export const SettingsView: React.FC<{ onClose?: () => void }> = ({ onClose }) =>
             </div>
           </div>
 
+          {/* Playlist & Adult Lock PIN Management */}
+          <div className="border-t border-slate-800/60 pt-3">
+            <div className="p-3 bg-slate-950/80 border border-amber-500/30 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  {isBn ? "প্লেলিস্ট ও অ্যাডাল্ট লক PIN" : "Playlist & Adult Lock PIN"}
+                </span>
+                <span className="text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-lg">
+                  {isBn ? "ডিফল্ট পিন: 0000" : "Default PIN: 0000"}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {isBn
+                  ? "অ্যাডাল্ট (Adult 18+) ও সিকিউর প্লেলিস্ট ক্যাটাগরি আনলক করার পাসওয়ার্ড। অ্যাপে ক্যাটাগরিতে ক্লিক করলে ডিফল্ট পিন 0000 চাবে।"
+                  : "PIN protection for Adult (18+) and locked playlists. Enter PIN 0000 when prompted."}
+              </p>
+            </div>
+          </div>
+
           <div className="border-t border-slate-800/60 pt-4">
             <button
               onClick={handleClearCache}

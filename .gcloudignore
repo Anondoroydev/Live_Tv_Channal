@@ -1,0 +1,13 @@
+# This file is used by gcloud to ignore files when uploading to Google Cloud.
+# We do NOT ignore dist/ because it contains our production build artifacts!
+
+# Ignore git and local IDE config
+.git
+.gitignore
+
+# Ignore node modules
+node_modules/
+
+# Ignore test and log files
+*.log
+coverage/

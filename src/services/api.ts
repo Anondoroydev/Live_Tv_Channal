@@ -7,6 +7,8 @@ import {
 } from "../types";
 
 const TOKEN_KEY = "myiptv_jwt_token";
+let channelsCache: Channel[] | null = null;
+let lastFetched: number = 0;
 
 export const getStoredToken = (): string | null => {
   try {
@@ -34,6 +36,31 @@ const getHeaders = () => {
   };
 };
 
+async function handleResponse<T = any>(res: Response): Promise<T> {
+  const cloned = res.clone();
+  if (!res.ok) {
+    let errorMessage = `Request failed with status ${res.status}`;
+    try {
+      const err = await cloned.json();
+      errorMessage = err.error || errorMessage;
+    } catch (e) {
+      try {
+        const text = await cloned.text();
+        if (text) {
+          errorMessage = text.substring(0, 200); 
+        }
+      } catch (ex) {}
+    }
+    throw new Error(errorMessage);
+  }
+  
+  try {
+    return await res.json();
+  } catch (e) {
+    return {} as T;
+  }
+}
+
 /**
  * Dynamic Base URL Resolver for Web and Native Android Capacitor environments.
  * When running inside a native webview (protocol is capacitor: or file:), relative paths
@@ -60,11 +87,7 @@ export const apiService = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Login failed");
-    }
-    const data = await res.json();
+    const data = await handleResponse<{ token: string; user: User }>(res);
     setStoredToken(data.token);
     return data;
   },
@@ -79,11 +102,7 @@ export const apiService = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, email, password }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Registration failed");
-    }
-    const data = await res.json();
+    const data = await handleResponse<{ token: string; user: User; message: string }>(res);
     setStoredToken(data.token);
     return data;
   },
@@ -93,8 +112,7 @@ export const apiService = {
     if (!token) return null;
     try {
       const res = await fetch(getApiUrl("/api/auth/me"), { headers: getHeaders() });
-      if (!res.ok) return null;
-      const data = await res.json();
+      const data = await handleResponse<{ user: User }>(res);
       return data.user;
     } catch {
       return null;
@@ -103,19 +121,29 @@ export const apiService = {
 
   logout() {
     setStoredToken(null);
+    channelsCache = null;
   },
 
-  async updateSubscription(plan: SubscriptionPlan): Promise<User> {
+  async updateSubscription(
+    plan: SubscriptionPlan,
+    transactionId?: string,
+    senderNumber?: string,
+    paymentMethod?: string,
+    amount?: string,
+  ): Promise<User> {
     const res = await fetch(getApiUrl("/api/auth/subscription"), {
       method: "POST",
       headers: getHeaders(),
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({
+        plan,
+        transactionId,
+        senderNumber,
+        paymentMethod,
+        amount,
+      }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to update subscription");
-    }
-    const data = await res.json();
+    const data = await handleResponse<{ user: User }>(res);
+    channelsCache = null;
     return data.user;
   },
 
@@ -125,16 +153,69 @@ export const apiService = {
     if (category) params.append("category", category);
     if (search) params.append("search", search);
 
-    const res = await fetch(getApiUrl(`/api/channels?${params.toString()}`));
-    if (!res.ok) throw new Error("Failed to fetch channels");
-    return res.json();
+    try {
+      const res = await fetch(getApiUrl(`/api/channels?${params.toString()}`), {
+        headers: getHeaders(),
+      });
+      
+      if (!res.ok) {
+        if (channelsCache && channelsCache.length > 0) return channelsCache;
+        if (res.status === 429 || res.status >= 500) {
+          await new Promise((r) => setTimeout(r, 1000));
+          const retryRes = await fetch(getApiUrl(`/api/channels?${params.toString()}`), {
+            headers: getHeaders(),
+          });
+          if (retryRes.ok) {
+             const data: Channel[] = await handleResponse<Channel[]>(retryRes);
+             if (!category && !search) {
+               channelsCache = data;
+               lastFetched = Date.now();
+             }
+             return data.filter((c) => c.isActive !== false);
+          }
+        }
+        throw new Error("Failed to fetch channels");
+      }
+      
+      const allChannels: Channel[] = await handleResponse<Channel[]>(res);
+      
+      if (!category && !search) {
+        channelsCache = allChannels;
+        lastFetched = Date.now();
+      }
+      
+      // Filter out inactive channels (those that couldn't be validated)
+      return allChannels.filter(c => c.isActive !== false);
+    } catch (e) {
+      console.warn("fetchChannels failed, using cached channels if available:", e);
+      if (channelsCache && channelsCache.length > 0) {
+        return channelsCache;
+      }
+      throw e;
+    }
   },
 
   async fetchCategories(): Promise<string[]> {
     try {
-      const res = await fetch(getApiUrl("/api/categories"));
-      if (!res.ok) throw new Error("Failed to fetch categories");
-      return res.json();
+      const res = await fetch(getApiUrl("/api/categories"), {
+        headers: getHeaders(),
+      });
+      const data = await handleResponse<any>(res);
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.categories)) return data.categories;
+      return [
+        "All",
+        "Sports",
+        "Bangla",
+        "India",
+        "Entertainment",
+        "Kids",
+        "News",
+        "Series / VOD",
+        "Music",
+        "Religious",
+        "International",
+      ];
     } catch (e) {
       console.warn("Failed to fetch categories, falling back to default:", e);
       return [
@@ -164,11 +245,7 @@ export const apiService = {
     const res = await fetch(getApiUrl(`/api/stream/${channelId}`), {
       headers: getHeaders(),
     });
-    if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.error || "Failed to load channel stream");
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
   async fetchEPG(
@@ -176,8 +253,7 @@ export const apiService = {
   ): Promise<EPGProgram[] | Record<string, EPGProgram[]>> {
     const url = channelId ? `/api/epg?channelId=${channelId}` : "/api/epg";
     const res = await fetch(getApiUrl(url));
-    if (!res.ok) throw new Error("Failed to fetch EPG guide");
-    return res.json();
+    return handleResponse(res);
   },
 
   async toggleFavorite(channelId: string): Promise<string[]> {
@@ -186,26 +262,23 @@ export const apiService = {
       headers: getHeaders(),
       body: JSON.stringify({ channelId }),
     });
-    if (!res.ok) throw new Error("Failed to toggle favorite");
-    const data = await res.json();
+    const data = await handleResponse<{ favorites: string[] }>(res);
     return data.favorites;
   },
 
   // ADMIN API
   async uploadM3U(
     m3uContent: string,
-    overwrite: boolean = false,
+    overwrite: boolean = true,
   ): Promise<{ message: string; addedCount: number; totalChannels: number }> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/m3u/upload"), {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({ m3uContent, overwrite }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to upload M3U playlist");
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
   async importM3uUrl(
@@ -217,16 +290,14 @@ export const apiService = {
     totalChannels: number;
     sourceUrl: string;
   }> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/m3u/url"), {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({ url, overwrite }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to download M3U URL");
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
   async importXtreamCodes(
@@ -235,33 +306,14 @@ export const apiService = {
     password: string,
     overwrite: boolean = true,
   ): Promise<{ message: string; addedCount: number; totalChannels: number }> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/xtream/connect"), {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({ serverUrl, username, password, overwrite }),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to connect Xtream Codes account");
-    }
-    return res.json();
-  },
-
-  async importMacPortal(
-    portalUrl: string,
-    macAddress: string,
-    overwrite: boolean = true,
-  ): Promise<{ message: string; addedCount: number; totalChannels: number }> {
-    const res = await fetch(getApiUrl("/api/admin/mac/connect"), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ portalUrl, macAddress, overwrite }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to connect MAC / Stalker portal");
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
   async getPlaylistSource(): Promise<{
@@ -275,8 +327,7 @@ export const apiService = {
     const res = await fetch(getApiUrl("/api/admin/playlist-source"), {
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error("Failed to get playlist source info");
-    return res.json();
+    return handleResponse(res);
   },
 
   async adminFetchChannels(search?: string, limit: number = 500, offset: number = 0): Promise<{ channels: Channel[]; total: number }> {
@@ -286,8 +337,7 @@ export const apiService = {
     params.append("offset", offset.toString());
 
     const res = await fetch(getApiUrl(`/api/admin/channels?${params.toString()}`), { headers: getHeaders() });
-    if (!res.ok) throw new Error("Failed to fetch admin channels");
-    const data = await res.json();
+    const data = await handleResponse<any>(res);
     if (Array.isArray(data)) {
       return { channels: data, total: data.length };
     }
@@ -298,56 +348,70 @@ export const apiService = {
     id: string,
     updates: Partial<Channel>,
   ): Promise<Channel> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
       method: "PUT",
       headers: getHeaders(),
       body: JSON.stringify(updates),
     });
-    if (!res.ok) throw new Error("Failed to update channel");
-    return res.json();
+    return handleResponse(res);
   },
 
   async adminDeleteChannel(id: string): Promise<void> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
       method: "DELETE",
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error("Failed to delete channel");
+    await handleResponse(res);
   },
 
   async adminClearChannels(): Promise<{ message: string }> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/channels/clear"), {
       method: "POST",
       headers: getHeaders(),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Failed to clear channels");
-    }
-    return res.json();
+    return handleResponse(res);
   },
 
-  async adminAssignNumbers(startFrom: number = 101): Promise<void> {
+  async adminResetDefaultChannels(): Promise<{ message: string; totalChannels: number; channels: Channel[] }> {
+    channelsCache = null;
+    lastFetched = 0;
+    const res = await fetch(getApiUrl("/api/admin/channels/reset-default"), {
+      method: "POST",
+      headers: getHeaders(),
+    });
+    return handleResponse(res);
+  },
+
+  async adminAssignNumbers(startFrom: number = 0): Promise<void> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/channels/assign-numbers"), {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({ startFrom }),
     });
-    if (!res.ok) throw new Error("Failed to reassign channel numbers");
+    await handleResponse(res);
   },
 
   async resetDatabase(): Promise<void> {
+    channelsCache = null;
+    lastFetched = 0;
     const res = await fetch(getApiUrl("/api/admin/reset-database"), {
       method: "POST",
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error("Failed to format database");
+    await handleResponse(res);
   },
 
   async adminFetchUsers(): Promise<User[]> {
     const res = await fetch(getApiUrl("/api/admin/users"), { headers: getHeaders() });
-    if (!res.ok) throw new Error("Failed to fetch users");
-    return res.json();
+    return handleResponse(res);
   },
 
   async adminCreateUser(userData: {
@@ -361,11 +425,7 @@ export const apiService = {
       headers: getHeaders(),
       body: JSON.stringify(userData),
     });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Failed to create user");
-    }
-    const data = await res.json();
+    const data = await handleResponse<{ user: User }>(res);
     return data.user;
   },
 
@@ -374,7 +434,7 @@ export const apiService = {
       method: "DELETE",
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error("Failed to delete user");
+    await handleResponse(res);
   },
 
   async adminUpdateUserSubscription(
@@ -386,8 +446,81 @@ export const apiService = {
       headers: getHeaders(),
       body: JSON.stringify({ plan }),
     });
-    if (!res.ok) throw new Error("Failed to update user subscription");
-    return res.json();
+    return handleResponse(res);
+  },
+
+  async adminUpdateUserAdultAccess(
+    userId: string,
+    hasAdultAccess: boolean,
+  ): Promise<User> {
+    const res = await fetch(getApiUrl(`/api/admin/users/${userId}/adult-access`), {
+      method: "PUT",
+      headers: getHeaders(),
+      body: JSON.stringify({ hasAdultAccess }),
+    });
+    return handleResponse(res);
+  },
+
+  async adminApproveUser(userId: string): Promise<{ message: string }> {
+    const res = await fetch(getApiUrl(`/api/admin/users/${userId}/approve`), {
+      method: "POST",
+      headers: getHeaders(),
+    });
+    return handleResponse(res);
+  },
+
+  async adminFetchPayments(): Promise<any[]> {
+    try {
+      const res = await fetch(getApiUrl("/api/admin/payments"), { headers: getHeaders() });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {}
+    return [];
+  },
+
+  async adminAddSamplePayments(): Promise<any[]> {
+    try {
+      const res = await fetch(getApiUrl("/api/admin/payments/sample"), {
+        method: "POST",
+        headers: getHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.payments || [];
+      }
+    } catch (e) {}
+    return [];
+  },
+
+  async adminApprovePayment(paymentId: string, userId?: string, plan?: string): Promise<{ message: string }> {
+    const idToUse = paymentId || userId || "default";
+    const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/approve`), {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify({ userId, plan })
+    });
+    return handleResponse(res);
+  },
+
+  async adminRejectPayment(paymentId: string, userId?: string): Promise<{ message: string }> {
+    const idToUse = paymentId || userId || "default";
+    const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/reject`), {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify({ userId })
+    });
+    return handleResponse(res);
+  },
+
+  async adminDeletePayment(paymentId: string, details?: { userId?: string; userName?: string; transactionId?: string }): Promise<{ message: string }> {
+    const safeId = encodeURIComponent(paymentId || "default");
+    const res = await fetch(getApiUrl(`/api/admin/payments/${safeId}`), {
+      method: "DELETE",
+      headers: getHeaders(),
+      body: JSON.stringify(details || {})
+    });
+    return handleResponse(res);
   },
 
   async adminFetchStats(): Promise<{
@@ -398,7 +531,7 @@ export const apiService = {
     activeSubscriptions: number;
   }> {
     const res = await fetch(getApiUrl("/api/admin/stats"), { headers: getHeaders() });
-    if (!res.ok) throw new Error("Failed to fetch admin stats");
-    return res.json();
+    return handleResponse(res);
   },
 };
+

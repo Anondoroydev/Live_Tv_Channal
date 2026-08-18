@@ -4,8 +4,13 @@ import path from "path";
 import { defineConfig } from "vite";
 
 export default defineConfig(() => {
+  const __dirname = path.dirname(new URL(import.meta.url).pathname);
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      outDir: "dist",
+      emptyOutDir: true,
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "."),

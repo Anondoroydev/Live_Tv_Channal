@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Heart,
   Play,
@@ -18,6 +18,7 @@ interface ChannelGridProps {
   allChannels?: Channel[];
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
+  isCategoryLocked?: (cat: string) => boolean;
   categories: string[];
   activeChannel: Channel | null;
   onSelectChannel: (channel: Channel) => void;
@@ -34,6 +35,7 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
   allChannels,
   selectedCategory,
   onSelectCategory,
+  isCategoryLocked,
   categories,
   activeChannel,
   onSelectChannel,
@@ -47,16 +49,7 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
   const [layoutMode, setLayoutMode] = useState<"grid" | "toffeeList">(
     "toffeeList",
   );
-  const [visibleLimit, setVisibleLimit] = useState<number>(60);
   const theme = THEMES[currentTheme] || THEMES.gold;
-
-  React.useEffect(() => {
-    setVisibleLimit(60);
-  }, [selectedCategory, channels.length]);
-
-  const visibleChannels = React.useMemo(() => {
-    return channels.slice(0, visibleLimit);
-  }, [channels, visibleLimit]);
 
   // Calculate channel counts per category
   const channelPool =
@@ -65,6 +58,23 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
     if (cat === "All") return channelPool.length;
     return channelPool.filter((c) => c.category === cat).length;
   };
+
+  // Scroll to active channel
+  const listRef = useRef<HTMLDivElement>(null);
+  const activeChannelRef = useRef<HTMLDivElement>(null);
+  const lastScrolledChannelId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeChannel && activeChannel.id !== lastScrolledChannelId.current) {
+      if (activeChannelRef.current) {
+        activeChannelRef.current.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+        lastScrolledChannelId.current = activeChannel.id;
+      }
+    }
+  }, [activeChannel]);
 
   return (
     <div className="flex flex-col h-full space-y-3">
@@ -130,11 +140,14 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
           const uniqueCats = ["All"];
           const lowerCats = new Set(["all"]);
 
-          categories.forEach((c) => {
-            const trimmed = c.trim();
-            if (trimmed && !lowerCats.has(trimmed.toLowerCase())) {
-              uniqueCats.push(trimmed);
-              lowerCats.add(trimmed.toLowerCase());
+          const safeCatList = Array.isArray(categories) ? categories : [];
+          safeCatList.forEach((c) => {
+            if (typeof c === "string") {
+              const trimmed = c.trim();
+              if (trimmed && !lowerCats.has(trimmed.toLowerCase())) {
+                uniqueCats.push(trimmed);
+                lowerCats.add(trimmed.toLowerCase());
+              }
             }
           });
 
@@ -142,6 +155,7 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
         })().map((cat) => {
           const isSelected = selectedCategory === cat;
           const count = getCategoryCount(cat);
+          const isLocked = isCategoryLocked ? isCategoryLocked(cat) : false;
 
           return (
             <button
@@ -153,6 +167,7 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
                   : "bg-slate-900/60 hover:bg-slate-800/80 text-slate-300 border-slate-800"
               }`}
             >
+              {isLocked && <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-pulse" />}
               <span>{cat}</span>
               <span
                 className={`text-[10px] font-black px-1.5 py-0.2 rounded-md ${
@@ -167,18 +182,19 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
           );
         })}
       </div>
-
+      
       {/* TOFFEE LIST VIEW MODE */}
       {layoutMode === "toffeeList" ? (
-        <div className="flex flex-col gap-2 overflow-y-auto pr-1 flex-1 scrollbar-thin">
-          {visibleChannels.map((channel, idx) => {
+        <div ref={listRef} className="flex flex-col gap-2 overflow-y-auto pr-1 flex-1 scrollbar-thin">
+          {channels.map((channel, idx) => {
             const isActive = activeChannel?.id === channel.id;
             const isFav = favorites.includes(channel.id);
             const isFocused = isGridFocused && focusedChannelIndex === idx;
 
             return (
               <div
-                key={channel.id}
+                ref={isActive ? activeChannelRef : null}
+                key={`${channel.id}_${idx}`}
                 onClick={() => onSelectChannel(channel)}
                 className={`group relative bg-slate-900/70 border rounded-2xl p-2.5 flex items-center justify-between gap-3 cursor-pointer transition-all duration-200 select-none ${
                   isActive
@@ -190,6 +206,8 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
                     : ""
                 }`}
               >
+              {/* ... (rest of the component) ... */}
+
                 {/* Left: Logo & Channel Details */}
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden shrink-0 flex items-center justify-center p-2 group-hover:border-slate-700 shadow-lg transition-all">
@@ -273,28 +291,18 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
               </div>
             );
           })}
-          {channels.length > visibleLimit && (
-            <div className="py-3 text-center shrink-0">
-              <button
-                onClick={() => setVisibleLimit((prev) => prev + 60)}
-                className={`px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-200 font-extrabold text-xs rounded-xl border border-slate-700 shadow-lg transition-all active:scale-95`}
-              >
-                Load More Channels ({channels.length - visibleLimit} remaining)
-              </button>
-            </div>
-          )}
         </div>
       ) : (
         /* GRID VIEW MODE */
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 overflow-y-auto pr-1 flex-1">
-          {visibleChannels.map((channel, idx) => {
+          {channels.map((channel, idx) => {
             const isActive = activeChannel?.id === channel.id;
             const isFav = favorites.includes(channel.id);
             const isFocused = isGridFocused && focusedChannelIndex === idx;
 
             return (
               <div
-                key={channel.id}
+                key={`${channel.id}_grid_${idx}`}
                 onClick={() => onSelectChannel(channel)}
                 className={`group relative bg-slate-900/80 border rounded-2xl p-2.5 flex flex-col justify-between cursor-pointer transition-all duration-200 hover:scale-[1.02] select-none ${
                   isActive
@@ -407,16 +415,6 @@ export const ChannelGrid: React.FC<ChannelGridProps> = ({
               </div>
             );
           })}
-          {channels.length > visibleLimit && (
-            <div className="col-span-full py-3 text-center">
-              <button
-                onClick={() => setVisibleLimit((prev) => prev + 60)}
-                className={`px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-200 font-extrabold text-xs rounded-xl border border-slate-700 shadow-lg transition-all active:scale-95`}
-              >
-                Load More Channels ({channels.length - visibleLimit} remaining)
-              </button>
-            </div>
-          )}
         </div>
       )}
 

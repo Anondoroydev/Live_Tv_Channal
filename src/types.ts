@@ -6,6 +6,7 @@ export type CategoryName =
   | "Entertainment"
   | "Kids"
   | "News"
+  | "Series / VOD"
   | "Music"
   | "Religious"
   | "International"
@@ -38,17 +39,6 @@ export interface SeriesItem {
   episodes: Episode[];
 }
 
-export type StreamType = "hls" | "dash" | "ts" | "direct" | "unknown";
-
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  level: "info" | "warn" | "error" | "success";
-  category: "Detection" | "Proxy" | "Player" | "Buffer" | "Codec" | "System";
-  message: string;
-  details?: string;
-}
-
 export interface Channel {
   id: string;
   channelNumber: number;
@@ -60,17 +50,6 @@ export interface Channel {
   isActive: boolean;
   groupTitle?: string;
   tvgId?: string;
-  tvgName?: string;
-  tvgLogo?: string;
-  tvgLanguage?: string;
-  tvgCountry?: string;
-  catchup?: string;
-  catchupDays?: number;
-  catchupSource?: string;
-  userAgent?: string;
-  referer?: string;
-  httpHeaders?: Record<string, string>;
-  streamType?: StreamType;
 }
 
 export interface EPGProgram {
@@ -99,10 +78,13 @@ export interface User {
   email: string;
   role: "user" | "admin";
   subscriptionPlan: SubscriptionPlan;
+  subscriptionStatus?: "active" | "inactive" | "expired";
   subscriptionExpiresAt: string | null; // ISO string or null for free/unlimited
   favorites: string[]; // array of channelIds
   recentlyWatched: string[]; // array of channelIds
   password?: string;
+  hasAdultAccess?: boolean;
+  isApprovedByAdmin?: boolean;
 }
 
 export interface M3UParseResult {
@@ -125,6 +107,7 @@ export interface SettingsConfig {
 export type ViewMode =
   | "livetv"
   | "movies"
+  | "series"
   | "guide"
   | "favorites"
   | "recent"
