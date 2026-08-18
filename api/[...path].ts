@@ -1,11 +1,7 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+// Lightweight proxy for /api/* endpoints.
+// Avoid importing @vercel/node types to prevent build-time TypeScript errors on Vercel.
 
-// A lightweight proxy for /api/* endpoints. If BACKEND_URL or APP_BACKEND_URL
-// environment variable is set to the backend service URL (e.g. Cloud Run),
-// this function will forward requests to that backend. Otherwise it returns
-// 503 Service Unavailable so clients get a clear error instead of 405.
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   try {
     const backend = process.env.BACKEND_URL || process.env.APP_BACKEND_URL || process.env.APP_URL;
     if (!backend) {
