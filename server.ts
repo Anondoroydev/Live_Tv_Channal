@@ -2338,6 +2338,12 @@ async function start() {
     console.warn("⚠️ Firestore sync failed during startup, continuing with in-memory store:", err?.message || err);
   }
 
+  // Prevent accidental production start — require explicit allow variable
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_PROD_DEPLOY !== "true") {
+    console.error("Production start blocked: set ALLOW_PROD_DEPLOY=true to allow running in production.");
+    process.exit(1);
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
