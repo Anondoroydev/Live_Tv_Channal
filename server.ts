@@ -170,18 +170,28 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Initialize Firebase Firestore
 let firebaseConfig: any = {
-  projectId: "gen-lang-client-0913304861",
-  appId: "1:1015598867701:web:aa94fc250bfa9fd91b51bc",
-  apiKey: "AIzaSyBwSAlQzRKmeP_v8SBCsFEBkUFo5cz9Ang",
-  authDomain: "gen-lang-client-0913304861.firebaseapp.com",
-  storageBucket: "gen-lang-client-0913304861.firebasestorage.app",
-  messagingSenderId: "1015598867701",
-  firestoreDatabaseId: "ai-studio-remixremixremixm-665f29ed-317d-471a-8fe8-5ceef2acb026"
+  projectId: "gen-lang-client-0748817758",
+  appId: "1:798244002253:web:224c34bd7570e8d5bf0c84",
+  apiKey: "AIzaSyBNHtSOpL_5hQOyjuR06ZkrZh1wn2mn3Ks",
+  authDomain: "gen-lang-client-0748817758.firebaseapp.com",
+  storageBucket: "gen-lang-client-0748817758.firebasestorage.app",
+  messagingSenderId: "798244002253",
+  firestoreDatabaseId: "ai-studio-remixremixremixr-d4b7c768-664f-4299-952e-1443f0101616"
 };
 
 try {
-  if (fs.existsSync(path.join(process.cwd(), "firebase-applet-config.json"))) {
-    firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8"));
+  const configPaths = [
+    path.join(process.cwd(), "firebase-applet-config.json"),
+    path.join(process.cwd(), "..", "firebase-applet-config.json"),
+    path.join(__dirname, "firebase-applet-config.json"),
+    path.join(__dirname, "..", "firebase-applet-config.json"),
+    path.join(__dirname, "../..", "firebase-applet-config.json")
+  ];
+  for (const p of configPaths) {
+    if (fs.existsSync(p)) {
+      firebaseConfig = JSON.parse(fs.readFileSync(p, "utf8"));
+      break;
+    }
   }
 } catch (e) {}
 
