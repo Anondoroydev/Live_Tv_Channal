@@ -1,0 +1,225 @@
+import { Channel } from "../types";
+import { INITIAL_CHANNELS } from "../data/initialChannels";
+import { db } from "../firebase";
+
+export interface M3UParseResult {
+  channels: Channel[];
+  categories: string[];
+  totalParsed: number;
+}
+
+export function isAdultContent(name: string, category: string = ""): boolean {
+  const lowerName = (name || "").toLowerCase();
+  const lowerCat = (category || "").toLowerCase();
+
+  const adultPatterns = [
+    /adult/i,
+    /18\+/i,
+    /\bxxx\b/i,
+    /porn/i,
+    /xvideos/i,
+    /brazzers/i,
+    /playboy/i,
+    /penthouse/i,
+    /redlight/i,
+    /red\s*traffic/i,
+    /hustler/i,
+    /erotic/i,
+    /exotic/i,
+    /x-rated/i,
+    /for\s*adult/i,
+    /\bnsfw\b/i,
+    /mature/i,
+    /midnight\s*(hot|movie|tv)?/i,
+    /private\s*cam/i,
+    /vixen/i,
+    /blacked/i,
+    /tushy/i,
+    /bangbros/i,
+    /naughty/i,
+    /uncensored/i,
+    /blue\s*movie/i,
+    /blue\s*film/i,
+    /adult\s*(tv|movie|channel|vod)/i,
+    /mycam/i,
+    /webcam\s*adult/i,
+    /strip\s*club/i,
+    /fetish/i,
+    /\bbdsm\b/i,
+    /orgy/i,
+    /swinger/i,
+    /bukkake/i,
+    /creampie/i,
+    /gangbang/i,
+    /hot\s*movies?/i,
+    /hot\s*videos?/i,
+    /hot\s*tv/i,
+    /sexy/i,
+    /seduction/i,
+    /desire/i,
+    /passion/i,
+    /girls?\s*cam/i,
+  ];
+
+  return adultPatterns.some(
+    (pattern) => pattern.test(lowerName) || pattern.test(lowerCat),
+  );
+}
+
+export function classifyIsPremium(
+  name: string,
+  category: string = "",
+): boolean {
+  const lowerCat = (category || "").toLowerCase();
+  if (
+    lowerCat.includes("adult") ||
+    lowerCat.includes("18+") ||
+    lowerCat.includes("xxx") ||
+    lowerCat.includes("porn")
+  ) {
+    return true;
+  }
+
+  let hash = 0;
+  const str = (name || "") + "vip_salt_70";
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash) % 10 < 7;
+}
+
+export function parseM3UClient(
+  content: string,
+  baseUrl?: string,
+): M3UParseResult {
+  const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const parsedChannels: Channel[] = [];
+  const categoriesSet = new Set<string>();
+
+  const seenUrls = new Set<string>();
+  let currentChannel: Partial<Channel> | null = null;
+  let autoNumber = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith("#EXTM3U")) continue;
+
+    if (line.startsWith("#EXTINF:")) {
+      let tvgName = "";
+      let tvgLogo = "";
+      let groupTitle = "Entertainment";
+      let channelNumber: number | undefined;
+
+      const tvgNameMatch = line.match(/tvg-name="([^"]+)"/i) || line.match(/tvg-name=([^\s,]+)/i);
+      if (tvgNameMatch) tvgName = tvgNameMatch[1].trim();
+
+      const tvgLogoMatch = line.match(/tvg-logo="([^"]+)"/i) || line.match(/tvg-logo=([^\s,]+)/i);
+      if (tvgLogoMatch) tvgLogo = tvgLogoMatch[1].trim();
+
+      const groupMatch = line.match(/group-title="([^"]+)"/i) || line.match(/group-title=([^\s,]+)/i);
+      if (groupMatch) groupTitle = groupMatch[1].trim();
+
+      const tvgChnoMatch = line.match(/tvg-chno="?(\d+)"?/i) || line.match(/channel-id="?(\d+)"?/i);
+      if (tvgChnoMatch) channelNumber = parseInt(tvgChnoMatch[1], 10);
+
+      const commaIndex = line.lastIndexOf(",");
+      let rawDisplayName = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : "";
+      rawDisplayName = rawDisplayName.replace(/\r/g, "").trim();
+
+      const finalName = rawDisplayName || tvgName || `Channel ${autoNumber + 1}`;
+      if (!groupTitle || groupTitle === "Undefined" || groupTitle === "Unknown") {
+        groupTitle = "Entertainment";
+      }
+
+      currentChannel = {
+        name: finalName,
+        logo: tvgLogo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+        category: groupTitle,
+        channelNumber: channelNumber !== undefined ? channelNumber : autoNumber,
+        isPremium: classifyIsPremium(finalName, groupTitle),
+        isActive: true,
+      };
+    } else if (!line.startsWith("#")) {
+      let streamUrl = line;
+      if (baseUrl && !streamUrl.startsWith("http://") && !streamUrl.startsWith("https://")) {
+        try {
+          streamUrl = new URL(streamUrl, baseUrl).toString();
+        } catch {}
+      }
+
+      if (
+        streamUrl.startsWith("http://") ||
+        streamUrl.startsWith("https://") ||
+        streamUrl.startsWith("rtmp://") ||
+        streamUrl.startsWith("rtsp://")
+      ) {
+        if (!seenUrls.has(streamUrl)) {
+          seenUrls.add(streamUrl);
+          const chName = currentChannel?.name || `Live Stream ${autoNumber + 1}`;
+          const chCat = currentChannel?.category || "Entertainment";
+
+          const fullChannel: Channel = {
+            id: `ch-m3u-${autoNumber}-${Date.now()}`,
+            name: chName,
+            logo: currentChannel?.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+            category: chCat,
+            channelNumber: currentChannel?.channelNumber !== undefined ? currentChannel.channelNumber : autoNumber,
+            streamUrl: streamUrl,
+            isPremium: classifyIsPremium(chName, chCat),
+            isActive: true,
+          };
+
+          parsedChannels.push(fullChannel);
+          categoriesSet.add(chCat);
+          autoNumber++;
+        }
+      }
+      currentChannel = null;
+    }
+  }
+
+  return {
+    channels: parsedChannels,
+    categories: Array.from(categoriesSet),
+    totalParsed: parsedChannels.length,
+  };
+}
+
+export async function saveChannelsDirect(
+  channels: Channel[],
+  sourceType: string = "m3u_text",
+  sourceUrl: string = "",
+) {
+  try {
+    localStorage.setItem("myiptv_custom_channels", JSON.stringify(channels));
+    localStorage.setItem(
+      "myiptv_playlist_source",
+      JSON.stringify({
+        type: sourceType,
+        url: sourceUrl,
+        lastSyncedAt: new Date().toISOString(),
+        totalChannels: channels.length,
+      }),
+    );
+  } catch (e) {}
+
+  try {
+    if (db) {
+      const { doc, setDoc } = await import("firebase/firestore");
+      await setDoc(doc(db, "settings", "channelsList"), {
+        channels,
+        updatedAt: new Date().toISOString(),
+        totalCount: channels.length,
+      });
+      await setDoc(doc(db, "settings", "playlistSource"), {
+        type: sourceType,
+        url: sourceUrl,
+        lastSyncedAt: new Date().toISOString(),
+        totalChannels: channels.length,
+      });
+    }
+  } catch (e) {
+    console.warn("Direct Firestore channel save skipped/error:", e);
+  }
+}

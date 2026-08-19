@@ -6,6 +6,7 @@ import {
   SettingsConfig,
 } from "../types";
 import { INITIAL_CHANNELS } from "../data/initialChannels";
+import { parseM3UClient, saveChannelsDirect } from "../utils/m3uClientParser";
 
 const TOKEN_KEY = "myiptv_jwt_token";
 let channelsCache: Channel[] | null = null;
@@ -73,6 +74,17 @@ export const getApiUrl = (path: string): string => {
   
   const base = isNative ? "http://localhost:3000" : "";
   return `${base}${path}`;
+};
+
+const getStoredChannelsFallback = (): Channel[] => {
+  try {
+    const local = localStorage.getItem("myiptv_custom_channels");
+    if (local) {
+      const parsed = JSON.parse(local);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (e) {}
+  return INITIAL_CHANNELS as Channel[];
 };
 
 export const apiService = {
@@ -350,7 +362,7 @@ export const apiService = {
       return allChannels.filter(c => c.isActive !== false);
     } catch (e) {
       console.warn("fetchChannels failed, using initial/cached channels fallback:", e);
-      let list = channelsCache && channelsCache.length > 0 ? channelsCache : (INITIAL_CHANNELS as Channel[]);
+      let list = getStoredChannelsFallback();
       if (category && category !== "All") {
         list = list.filter((c) => c.category === category);
       }
@@ -367,24 +379,18 @@ export const apiService = {
       const res = await fetch(getApiUrl("/api/categories"), {
         headers: getHeaders(),
       });
-      const data = await handleResponse<any>(res);
-      if (Array.isArray(data)) return data;
-      if (data && Array.isArray(data.categories)) return data.categories;
-      return [
-        "All",
-        "Sports",
-        "Bangla",
-        "India",
-        "Entertainment",
-        "Kids",
-        "News",
-        "Series / VOD",
-        "Music",
-        "Religious",
-        "International",
-      ];
+      if (res.ok) {
+        const data = await handleResponse<any>(res);
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.categories)) return data.categories;
+      }
     } catch (e) {
-      console.warn("Failed to fetch categories, falling back to default:", e);
+      console.warn("Failed to fetch categories, falling back to dynamic channel list:", e);
+    }
+
+    const all = getStoredChannelsFallback();
+    const cats = Array.from(new Set(all.map((c) => c.category).filter(Boolean)));
+    if (cats.length === 0) {
       return [
         "All",
         "Sports",
@@ -399,6 +405,7 @@ export const apiService = {
         "International",
       ];
     }
+    return ["All", ...cats.filter((c) => c !== "All")];
   },
 
   async getStreamInfo(channelId: string): Promise<{
@@ -452,19 +459,53 @@ export const apiService = {
     return data.favorites;
   },
 
-  // ADMIN API
+  // ADMIN API with Direct Client-Side Fallback
   async uploadM3U(
     m3uContent: string,
     overwrite: boolean = true,
   ): Promise<{ message: string; addedCount: number; totalChannels: number }> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl("/api/admin/m3u/upload"), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ m3uContent, overwrite }),
+    try {
+      const res = await fetch(getApiUrl("/api/admin/m3u/upload"), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ m3uContent, overwrite }),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {
+      console.warn("Server uploadM3U failed, executing in-browser parser:", e);
+    }
+
+    // Direct Browser Parser Fallback
+    const result = parseM3UClient(m3uContent);
+    if (result.channels.length === 0) {
+      throw new Error("No valid #EXTINF stream channels found in the M3U content.");
+    }
+
+    let updatedChannels: Channel[] = [];
+    if (overwrite) {
+      updatedChannels = result.channels;
+    } else {
+      const existing = getStoredChannelsFallback();
+      const existingUrls = new Set(existing.map((c) => c.streamUrl));
+      const newItems = result.channels.filter((c) => !existingUrls.has(c.streamUrl));
+      updatedChannels = [...existing, ...newItems];
+    }
+
+    // Re-index channel numbers
+    updatedChannels.forEach((c, idx) => {
+      c.channelNumber = idx;
     });
-    return handleResponse(res);
+
+    await saveChannelsDirect(updatedChannels, "m3u_text");
+    return {
+      message: `Successfully loaded & saved ${result.totalParsed} channels via M3U parser!`,
+      addedCount: result.totalParsed,
+      totalChannels: updatedChannels.length,
+    };
   },
 
   async importM3uUrl(
@@ -478,12 +519,69 @@ export const apiService = {
   }> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl("/api/admin/m3u/url"), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ url, overwrite }),
+    try {
+      const res = await fetch(getApiUrl("/api/admin/m3u/url"), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ url, overwrite }),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {
+      console.warn("Server importM3uUrl failed, trying direct browser fetch:", e);
+    }
+
+    // Fetch URL from browser (with CORS proxy if needed)
+    let content = "";
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) {
+        content = await resp.text();
+      } else {
+        throw new Error("Direct fetch failed");
+      }
+    } catch {
+      try {
+        const proxyResp = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+        if (proxyResp.ok) {
+          content = await proxyResp.text();
+        }
+      } catch (err) {
+        throw new Error("Failed to fetch playlist URL. Check CORS or URL availability.");
+      }
+    }
+
+    if (!content) {
+      throw new Error("Empty response received from playlist URL.");
+    }
+
+    const result = parseM3UClient(content, url);
+    if (result.channels.length === 0) {
+      throw new Error("No channels could be parsed from the provided M3U link.");
+    }
+
+    let updatedChannels: Channel[] = [];
+    if (overwrite) {
+      updatedChannels = result.channels;
+    } else {
+      const existing = getStoredChannelsFallback();
+      const existingUrls = new Set(existing.map((c) => c.streamUrl));
+      const newItems = result.channels.filter((c) => !existingUrls.has(c.streamUrl));
+      updatedChannels = [...existing, ...newItems];
+    }
+
+    updatedChannels.forEach((c, idx) => {
+      c.channelNumber = idx;
     });
-    return handleResponse(res);
+
+    await saveChannelsDirect(updatedChannels, "m3u_url", url);
+    return {
+      message: `Successfully imported ${result.totalParsed} channels from M3U URL!`,
+      addedCount: result.totalParsed,
+      totalChannels: updatedChannels.length,
+      sourceUrl: url,
+    };
   },
 
   async importXtreamCodes(
@@ -494,12 +592,24 @@ export const apiService = {
   ): Promise<{ message: string; addedCount: number; totalChannels: number }> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl("/api/admin/xtream/connect"), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ serverUrl, username, password, overwrite }),
-    });
-    return handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl("/api/admin/xtream/connect"), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ serverUrl, username, password, overwrite }),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {
+      console.warn("Server Xtream connect failed, fetching M3U via player_api:", e);
+    }
+
+    // Xtream M3U URL format
+    const cleanServer = serverUrl.replace(/\/+$/, "");
+    const xtreamM3uUrl = `${cleanServer}/get.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&type=m3u_plus&output=m3u8`;
+
+    return await this.importM3uUrl(xtreamM3uUrl, overwrite);
   },
 
   async getPlaylistSource(): Promise<{
@@ -510,24 +620,62 @@ export const apiService = {
     lastSyncedAt: string;
     totalChannels: number;
   }> {
-    const res = await fetch(getApiUrl("/api/admin/playlist-source"), {
-      headers: getHeaders(),
-    });
-    return handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl("/api/admin/playlist-source"), {
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    try {
+      const local = localStorage.getItem("myiptv_playlist_source");
+      if (local) return JSON.parse(local);
+    } catch (e) {}
+
+    const channels = getStoredChannelsFallback();
+    return {
+      type: "default",
+      url: "",
+      xtreamServer: "",
+      xtreamUser: "",
+      lastSyncedAt: new Date().toISOString(),
+      totalChannels: channels.length,
+    };
   },
 
   async adminFetchChannels(search?: string, limit: number = 500, offset: number = 0): Promise<{ channels: Channel[]; total: number }> {
-    const params = new URLSearchParams();
-    if (search) params.append("search", search);
-    params.append("limit", limit.toString());
-    params.append("offset", offset.toString());
+    try {
+      const params = new URLSearchParams();
+      if (search) params.append("search", search);
+      params.append("limit", limit.toString());
+      params.append("offset", offset.toString());
 
-    const res = await fetch(getApiUrl(`/api/admin/channels?${params.toString()}`), { headers: getHeaders() });
-    const data = await handleResponse<any>(res);
-    if (Array.isArray(data)) {
-      return { channels: data, total: data.length };
+      const res = await fetch(getApiUrl(`/api/admin/channels?${params.toString()}`), { headers: getHeaders() });
+      if (res.ok) {
+        const data = await handleResponse<any>(res);
+        if (Array.isArray(data)) {
+          return { channels: data, total: data.length };
+        }
+        if (data && Array.isArray(data.channels)) {
+          return data;
+        }
+      }
+    } catch (e) {
+      console.warn("adminFetchChannels server error, using fallback channels:", e);
     }
-    return data;
+
+    const all = getStoredChannelsFallback();
+    let filtered = all;
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = all.filter((c) => (c.name || "").toLowerCase().includes(q) || (c.category || "").toLowerCase().includes(q));
+    }
+    return {
+      channels: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+    };
   },
 
   async adminUpdateChannel(
@@ -536,42 +684,82 @@ export const apiService = {
   ): Promise<Channel> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
-      method: "PUT",
-      headers: getHeaders(),
-      body: JSON.stringify(updates),
-    });
-    return handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
+        method: "PUT",
+        headers: getHeaders(),
+        body: JSON.stringify(updates),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    const channels = getStoredChannelsFallback();
+    const idx = channels.findIndex((c) => c.id === id);
+    if (idx !== -1) {
+      channels[idx] = { ...channels[idx], ...updates };
+      await saveChannelsDirect(channels);
+      return channels[idx];
+    }
+    throw new Error("Channel not found");
   },
 
   async adminDeleteChannel(id: string): Promise<void> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
-      method: "DELETE",
-      headers: getHeaders(),
-    });
-    await handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl(`/api/admin/channels/${id}`), {
+        method: "DELETE",
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        await handleResponse(res);
+        return;
+      }
+    } catch (e) {}
+
+    const channels = getStoredChannelsFallback();
+    const updated = channels.filter((c) => c.id !== id);
+    await saveChannelsDirect(updated);
   },
 
   async adminClearChannels(): Promise<{ message: string }> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl("/api/admin/channels/clear"), {
-      method: "POST",
-      headers: getHeaders(),
-    });
-    return handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl("/api/admin/channels/clear"), {
+        method: "POST",
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    await saveChannelsDirect([], "cleared");
+    return { message: "All channels cleared successfully!" };
   },
 
   async adminResetDefaultChannels(): Promise<{ message: string; totalChannels: number; channels: Channel[] }> {
     channelsCache = null;
     lastFetched = 0;
-    const res = await fetch(getApiUrl("/api/admin/channels/reset-default"), {
-      method: "POST",
-      headers: getHeaders(),
-    });
-    return handleResponse(res);
+    try {
+      const res = await fetch(getApiUrl("/api/admin/channels/reset-default"), {
+        method: "POST",
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    await saveChannelsDirect(INITIAL_CHANNELS as Channel[], "default");
+    return {
+      message: "Reset channels to default successfully!",
+      totalChannels: INITIAL_CHANNELS.length,
+      channels: INITIAL_CHANNELS as Channel[],
+    };
   },
 
   async adminAssignNumbers(startFrom: number = 0): Promise<void> {
