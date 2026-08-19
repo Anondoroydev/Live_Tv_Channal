@@ -15,66 +15,56 @@ const PaymentTable = () => {
     try {
       let data: any[] = [];
       
-      // 1. Fetch from server API (returns memory + user requests + firestore)
-      try {
-        const apiData = await apiService.adminFetchPayments();
-        if (Array.isArray(apiData) && apiData.length > 0) {
-          data = apiData;
-        }
-      } catch (err) {
-        console.warn('API fetch payments error:', err);
-      }
-
-      // 2. Fetch directly from Firestore collection and update matching items
+      // 1. Fetch directly from Firestore collection first (Reliable source)
       try {
         if (db) {
+          const { collection, getDocs } = await import('firebase/firestore');
+          const querySnapshot = await getDocs(collection(db, 'payments'));
+          data = querySnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as object) }));
+          
+          // Filter out deleted
           const deletedSnap = await getDocs(collection(db, 'deleted_payments'));
           const deletedSet = new Set<string>();
-          if (deletedSnap && !deletedSnap.empty) {
+          if (!deletedSnap.empty) {
             deletedSnap.docs.forEach(d => deletedSet.add(d.id));
           }
-
-          const querySnapshot = await getDocs(collection(db, 'payments'));
-          const fsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as object) }));
-          fsData.forEach((item: any) => {
-            if (
-              deletedSet.has(item.id) ||
-              (item.userId && (deletedSet.has(item.userId) || deletedSet.has(`req_${item.userId}`))) ||
-              (item.userName && deletedSet.has(item.userName)) ||
-              (item.transactionId && deletedSet.has(item.transactionId))
-            ) {
-              return;
-            }
-            const existingIndex = data.findIndex(c => c.id === item.id || c.id === `req_${item.userId}` || (c.userId && c.userId === item.userId) || (c.transactionId && c.transactionId === item.transactionId));
-            if (existingIndex !== -1) {
-              if (item.status === 'Rejected' || item.status === 'Success') {
-                data[existingIndex].status = item.status;
-              }
-            } else if (item.userId || item.id) {
-              data.push(item);
-            }
-          });
+          data = data.filter(item => !deletedSet.has(item.id));
         }
       } catch (error) {
         console.warn('Firestore fetch error in PaymentTable:', error);
       }
 
-      // 3. Final deduplicate
+      // 2. Fetch from server API to merge/update status
+      try {
+        const apiData = await apiService.adminFetchPayments();
+        if (Array.isArray(apiData)) {
+          // Merge API data with Firestore data
+          apiData.forEach(apiItem => {
+            const existingIndex = data.findIndex(c => c.id === apiItem.id || c.userId === apiItem.userId);
+            if (existingIndex !== -1) {
+              data[existingIndex] = { ...data[existingIndex], ...apiItem };
+            } else {
+              data.push(apiItem);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('API fetch payments error:', err);
+      }
+
+      // 3. Final deduplicate & Sort
       const finalMap = new Map<string, any>();
       data.forEach(item => {
-        const key = item.userId || item.userName || item.id;
-        if (!finalMap.has(key)) {
-          finalMap.set(key, { ...item });
-        } else {
-          const current = finalMap.get(key);
-          if (item.status === 'Rejected' || item.status === 'Success') {
-            current.status = item.status;
-          }
+        const key = item.userId || item.id;
+        if (key) {
+           const existing = finalMap.get(key);
+           if (!existing || (item.status === 'Success' && existing.status !== 'Success')) {
+             finalMap.set(key, { ...item });
+           }
         }
       });
       data = Array.from(finalMap.values());
 
-      // Sort descending by date
       data.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
       setPayments(data);

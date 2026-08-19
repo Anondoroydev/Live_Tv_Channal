@@ -68,33 +68,30 @@ export const SettingsView: React.FC<{ onClose?: () => void }> = ({ onClose }) =>
   const isBn = settings.language === "bn";
 
   return (
-    <div className="flex flex-col h-full bg-slate-950/95 border border-slate-850 rounded-3xl p-6 overflow-y-auto shadow-2xl text-white select-none">
-      {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-6 shrink-0">
+    <div className="flex flex-col h-full bg-slate-950/95 sm:border sm:border-slate-850 sm:rounded-3xl p-4 sm:p-6 overflow-y-auto shadow-2xl text-white select-none">
+      {/* Header - Fixed/Sticky for Mobile */}
+      <div className="sticky top-0 z-50 flex items-center justify-between pb-4 pt-safe md:pt-2 border-b border-slate-800 mb-6 shrink-0 bg-slate-950/95">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-amber-500/10 text-amber-400 rounded-2xl border border-amber-500/20">
             <Settings className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-black tracking-wide uppercase">
-              {isBn ? "সেটিংস কনফিগারেশন" : "Settings Configuration"}
+            <h2 className="text-lg sm:text-xl font-black tracking-wide uppercase">
+              {isBn ? "সেটিংস" : "Settings"}
             </h2>
-            <p className="text-xs text-slate-400 font-medium">
-              {isBn
-                ? "প্লেব্যাক মোড, স্ট্রিম প্রক্সি এবং অ্যাপ ইন্টারফেস পরিবর্তন করুন"
-                : "Configure playback modes, stream proxy, and UI themes"}
-            </p>
           </div>
         </div>
         {onClose && (
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-bold rounded-xl transition-colors"
+            className="px-5 py-3 sm:px-6 sm:py-3 bg-amber-500 hover:bg-amber-600 text-black text-xs sm:text-sm font-black rounded-2xl transition-all shadow-lg shadow-amber-500/20 active:scale-95"
           >
-            {isBn ? "বন্ধ করুন ✕" : "Close ✕"}
+            {isBn ? "ফিরে যান ✕" : "Back ✕"}
           </button>
         )}
       </div>
+
+      <div className="fixed inset-0 bg-black/50 md:hidden -z-10" onClick={onClose} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Playback Settings */}
@@ -104,42 +101,32 @@ export const SettingsView: React.FC<{ onClose?: () => void }> = ({ onClose }) =>
           </h3>
 
           {/* Stream Proxy Toggle */}
-          <div className="flex flex-col gap-2 pt-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <ShieldAlert className="w-4 h-4 text-amber-500" />
-                  {isBn ? "স্ট্রিম প্রক্সি (Stream Proxy)" : "Enable Stream Proxy"}
+          <div className="flex items-center justify-between border-t border-slate-800/60 pt-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-bold text-white">
+                  {isBn ? "স্মার্ট স্ট্রিম প্রক্সি" : "Smart Stream Proxy"}
                 </p>
-                <p className="text-[11px] text-slate-400">
-                  {isBn
-                    ? "CORS সীমাবদ্ধতা এড়াতে প্রক্সি সার্ভার ব্যবহার করুন"
-                    : "Route streams through secure proxy to bypass browser limits"}
-                </p>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {settings.streamProxyEnabled ? (isBn ? "চালু" : "ON") : (isBn ? "বন্ধ" : "OFF")}
+                </span>
               </div>
-              <button
-                onClick={() => updateSetting("streamProxyEnabled", !settings.streamProxyEnabled)}
-                className={`w-12 h-6 rounded-full transition-colors p-1 flex items-center ${
-                  settings.streamProxyEnabled
-                    ? "bg-amber-500 justify-end"
-                    : "bg-slate-800 justify-start"
-                }`}
-              >
-                <div className="w-4 h-4 rounded-full bg-slate-950 shadow-md" />
-              </button>
+              <p className="text-[11px] text-slate-400">
+                {isBn
+                  ? "অন থাকলে CORS ও Mixed-content বাইপাস করবে, অফ থাকলে ডিরেক্ট স্ট্রিম হবে"
+                  : "Bypasses CORS & Mixed-content issues. Plays direct when OFF."}
+              </p>
             </div>
-            {/* Context/Explanation Box inside settings */}
-            <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 text-[11px] leading-relaxed text-slate-300">
-              {isBn ? (
-                <p>
-                  ⚠️ <strong className="text-amber-400">গুরুত্বপূর্ণ নোটিশ:</strong> আপনার IPTV প্রোভাইডার যদি একাধিক ব্যক্তি একসঙ্গে ব্যবহার করার কারণে ব্লক করে দেয় (<span className="text-rose-400">Multi-connection limits</span>), তবে এই প্রক্সি অপশনটি <strong className="text-rose-400">বন্ধ (Off)</strong> করে দিন। বন্ধ রাখলে প্রতিটি মোবাইল সরাসরি IPTV সার্ভারে নিজস্ব আইপি দিয়ে যুক্ত হবে এবং কোনো প্লেব্যাক ফেইলর বা ডিসকানেক্ট সমস্যা হবে না। (মোবাইল অ্যাপ/অ্যান্ড্রয়েড টিভিতে সরাসরি অফ করা সাজেস্টেড)।
-                </p>
-              ) : (
-                <p>
-                  ⚠️ <strong className="text-amber-400">Important Notice:</strong> If your IPTV provider blocks playback or disconnects you due to multiple users (<span className="text-rose-400">Multi-connection limits</span>), <strong className="text-rose-400">DISABLE (Off)</strong> this Stream Proxy. Disabling it allows each device to connect directly using its own IP address, matching standard players like VLC or MX Player.
-                </p>
-              )}
-            </div>
+            <button
+              onClick={() => updateSetting("streamProxyEnabled", !settings.streamProxyEnabled)}
+              className={`w-12 h-6 rounded-full transition-colors p-1 flex items-center shrink-0 ${
+                settings.streamProxyEnabled
+                  ? "bg-amber-500 justify-end"
+                  : "bg-slate-800 justify-start"
+              }`}
+            >
+              <div className="w-4 h-4 rounded-full bg-slate-950 shadow-md" />
+            </button>
           </div>
 
           <div className="flex items-center justify-between border-t border-slate-800/60 pt-3">

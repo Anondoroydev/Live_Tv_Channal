@@ -85,6 +85,7 @@ export interface User {
   password?: string;
   hasAdultAccess?: boolean;
   isApprovedByAdmin?: boolean;
+  paymentStatus?: "Success" | "Rejected" | "Pending";
 }
 
 export interface M3UParseResult {

@@ -460,12 +460,12 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
             {ch.id}
           </div>
         </div>
-        <div className="w-32 shrink-0">
+        <div className="w-32 shrink-0 hidden sm:block">
           <span className="px-2 py-0.5 bg-slate-800 text-slate-400 rounded-md text-[9px] font-bold uppercase truncate block w-fit">
             {ch.category}
           </span>
         </div>
-        <div className="w-24 shrink-0">
+        <div className="w-24 shrink-0 hidden xs:block">
           <button
             onClick={() => handleToggleChannelPremium(ch)}
             className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wide transition-colors ${
@@ -474,7 +474,7 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                 : "bg-slate-800 text-slate-400 border border-slate-700/50 hover:bg-slate-700"
             }`}
           >
-            {ch.isPremium ? "VIP PREMIUM" : "FREE WATCH"}
+            {ch.isPremium ? "VIP" : "FREE"}
           </button>
         </div>
         <div className="w-24 shrink-0">
@@ -522,10 +522,10 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
   }, [filteredChannels, channelDeleteConfirmId, handleDeleteChannel, handleToggleChannelPremium, handleToggleChannelActive]);
 
   return (
-    <div className="flex flex-col h-[640px] text-slate-100">
+    <div className="flex flex-col min-h-[500px] h-full text-slate-100">
       {/* Sub Header / Tab Bar */}
       <div className="flex flex-col gap-4 border-b border-slate-800/80 pb-4 mb-5">
-        <div className="flex flex-wrap items-center gap-1.5 bg-slate-900/60 p-1 rounded-2xl border border-slate-800/80">
+        <div className="flex flex-wrap items-center gap-1 bg-slate-900/60 p-1 rounded-2xl border border-slate-800/80 overflow-x-auto no-scrollbar">
           <button
             onClick={() => {
               setActiveTab("dashboard");
@@ -1350,15 +1350,13 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
               <table className="w-full text-left text-xs border-collapse min-w-[800px]">
                 <thead className="bg-slate-900/80 text-slate-400 font-extrabold uppercase tracking-wider border-b border-slate-800 sticky top-0 z-10">
                   <tr>
-                    <th className="p-3 text-[10px]">Client / Username</th>
-                    <th className="p-3 text-[10px]">Registered Email</th>
-                    <th className="p-3 text-[10px]">Role</th>
-                    <th className="p-3 text-[10px]">Active Plan Tier</th>
-                    <th className="p-3 text-[10px]">Expires Date</th>
-                    <th className="p-3 text-[10px]">Update Plan Limit</th>
-                    <th className="p-3 text-[10px]">Payment Verification</th>
-                    <th className="p-3 text-[10px]">Adult Access (18+)</th>
-                    <th className="p-3 text-[10px] text-right">Delete</th>
+                    <th className="p-3 text-[10px]">Client</th>
+                    <th className="p-3 text-[10px] hidden md:table-cell">Email</th>
+                    <th className="p-3 text-[10px] hidden sm:table-cell">Role</th>
+                    <th className="p-3 text-[10px]">Plan</th>
+                    <th className="p-3 text-[10px] hidden lg:table-cell">Expires</th>
+                    <th className="p-3 text-[10px]">Update</th>
+                    <th className="p-3 text-[10px] hidden sm:table-cell text-right">Delete</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/40 font-medium">
@@ -1367,14 +1365,16 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                       key={u.id ? `user-${u.id}-${idx}` : `user-idx-${idx}`}
                       className="hover:bg-slate-900/50 transition-colors"
                     >
-                      <td className="p-3 font-bold text-slate-100 flex items-center gap-2">
-                        <span className={`w-1.5 h-1.5 rounded-full ${u.isApprovedByAdmin ? "bg-emerald-400" : "bg-rose-400"}`} />
-                        {u.username}
+                      <td className="p-3 font-bold text-slate-100">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${u.isApprovedByAdmin ? "bg-emerald-400" : "bg-rose-400"}`} />
+                          <span className="truncate max-w-[80px] sm:max-w-none">{u.username}</span>
+                        </div>
                       </td>
-                      <td className="p-3 text-slate-400 font-mono text-[11px]">
+                      <td className="p-3 text-slate-400 font-mono text-[10px] hidden md:table-cell">
                         {u.email || "—"}
                       </td>
-                      <td className="p-3 uppercase text-[9px] font-extrabold tracking-wider">
+                      <td className="p-3 uppercase text-[8px] font-extrabold tracking-wider hidden sm:table-cell">
                         <span
                           className={`px-1.5 py-0.5 rounded ${u.role === "admin" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-slate-800 text-slate-400"}`}
                         >
@@ -1383,21 +1383,21 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                       </td>
                       <td className="p-3">
                         {u.subscriptionPlan !== "Free" && u.isApprovedByAdmin === false ? (
-                          <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 rounded font-bold text-amber-400 font-mono text-[11px] flex items-center gap-1 w-max">
+                          <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 rounded font-bold text-amber-400 font-mono text-[10px] flex items-center gap-1 w-max">
                             <Clock size={10} className="animate-pulse" /> Pending
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded font-bold text-amber-300 font-mono text-[11px]">
+                          <span className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded font-bold text-amber-300 font-mono text-[10px]">
                             {u.subscriptionPlan}
                           </span>
                         )}
                       </td>
-                      <td className="p-3 text-slate-400 font-mono text-[11px]">
+                      <td className="p-3 text-slate-400 font-mono text-[10px] hidden lg:table-cell">
                         {u.subscriptionExpiresAt
                           ? new Date(
                               u.subscriptionExpiresAt,
                             ).toLocaleDateString()
-                          : "Unlimited / Lifetime"}
+                          : "Unlimited"}
                       </td>
                       <td className="p-3">
                         <select
@@ -1408,68 +1408,32 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                               e.target.value as SubscriptionPlan,
                             )
                           }
-                          className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs text-white font-bold cursor-pointer focus:border-amber-400 focus:outline-none"
+                          className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[10px] text-white font-bold cursor-pointer focus:border-amber-400 focus:outline-none max-w-[100px]"
                         >
-                          <option value="Free">Free Account</option>
-                          <option value="1 Day Pass (৳10)">
-                            1 Day Pass (৳10)
-                          </option>
-                          <option value="1 Month Standard (৳45)">
-                            1 Month Standard - 200 Ch (৳45)
-                          </option>
-                          <option value="1 Month Premium (৳100)">
-                            1 Month VIP Premium - 300+ Ch (৳100)
-                          </option>
-                          <option value="365 Days">365 Days Unlimited</option>
+                          <option value="Free">Free</option>
+                          <option value="1 Day Pass (৳10)">1 Day</option>
+                          <option value="1 Month Standard (৳45)">Standard</option>
+                          <option value="1 Month Premium (৳100)">VIP</option>
+                          <option value="365 Days">365 Days</option>
                           <option value="Expired">Expired</option>
                         </select>
                       </td>
-                      <td className="p-3">
-                        {u.isApprovedByAdmin ? (
-                          <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-bold uppercase flex items-center gap-1 w-max">
-                            <CheckCircle2 size={11} /> Approved
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => setActiveTab("payments")}
-                            className="px-2.5 py-1 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm hover:scale-105"
-                            title="Go to Payments tab to verify & approve transaction ID"
-                          >
-                            <Clock size={11} className="text-amber-400 animate-pulse" /> Verify Payment
-                          </button>
-                        )}
-                      </td>
-                      <td className="p-3">
-                        <button
-                          onClick={() =>
-                            handleUserAdultAccessChange(u.id, !u.hasAdultAccess)
-                          }
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                            u.hasAdultAccess
-                              ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30"
-                              : "bg-slate-900 text-slate-400 border border-slate-800 hover:bg-slate-800"
-                          }`}
-                          title="Click to toggle adult content permission"
-                        >
-                          {u.hasAdultAccess ? "Allowed (On)" : "Restricted (Off)"}
-                        </button>
-                      </td>
-                      <td className="p-3 text-right">
+                      <td className="p-3 text-right hidden sm:table-cell">
                         {u.role !== "admin" ? (
                           userDeleteConfirmId === u.id ? (
-                            <div className="flex items-center justify-end gap-1.5 animate-in fade-in zoom-in-95 duration-150">
+                            <div className="flex items-center justify-end gap-1">
                               <button
                                 onClick={() => {
                                   handleDeleteUser(u.id);
                                   setUserDeleteConfirmId(null);
                                 }}
-                                className="px-2 py-1 bg-rose-600 hover:bg-rose-500 text-white font-black text-[9px] rounded-lg uppercase tracking-wider"
+                                className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-[9px]"
                               >
-                                Delete
+                                Del
                               </button>
                               <button
                                 onClick={() => setUserDeleteConfirmId(null)}
-                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-[9px] rounded-lg uppercase tracking-wider"
+                                className="px-1.5 py-0.5 bg-slate-700 text-white rounded text-[9px]"
                               >
                                 No
                               </button>
@@ -1477,16 +1441,13 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
                           ) : (
                             <button
                               onClick={() => setUserDeleteConfirmId(u.id)}
-                              className="text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-slate-900 transition-colors"
-                              title="Delete Subscriber"
+                              className="text-slate-500 hover:text-rose-400 p-1.5"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           )
                         ) : (
-                          <span className="text-[10px] text-slate-600 font-bold px-1">
-                            Protected
-                          </span>
+                          <span className="text-[9px] text-slate-600">Shield</span>
                         )}
                       </td>
                     </tr>

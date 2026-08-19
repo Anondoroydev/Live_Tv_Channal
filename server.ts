@@ -11,6 +11,7 @@ import { createServer as createViteServer } from "vite";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
+  setLogLevel,
   doc,
   getDoc,
   setDoc,
@@ -162,7 +163,7 @@ function fetchWithTlsBypass(
 }
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
@@ -187,8 +188,9 @@ try {
 
 let db: any = null;
 try {
+  setLogLevel("silent");
   const firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
-  db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || "ai-studio-remixremixremixm-665f29ed-317d-471a-8fe8-5ceef2acb026");
+  db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
   console.log("🔥 Firebase Firestore initialized successfully in server.ts with database ID:", firebaseConfig.firestoreDatabaseId);
 } catch (e) {
   console.log("ℹ️ Firestore initialization failed, running in-memory");
@@ -302,31 +304,25 @@ function isAdultContent(name: string, category: string = ""): boolean {
 }
 
 function classifyIsPremium(name: string, category: string = "", isDuplicate: boolean = false): boolean {
-  const lowerName = (name || "").toLowerCase();
+  // Adult content categories are always VIP/Premium
   const lowerCat = (category || "").toLowerCase();
-
-  // 1. Explicit VIP/Paid keywords or Adult 18+ channels are premium
   if (
     lowerCat.includes("adult") ||
     lowerCat.includes("18+") ||
     lowerCat.includes("xxx") ||
-    lowerCat.includes("porn") ||
-    lowerName.includes("vip") ||
-    lowerName.includes("premium") ||
-    lowerName.includes("payperview") ||
-    lowerCat.includes("vip") ||
-    lowerCat.includes("pay per view")
+    lowerCat.includes("porn")
   ) {
     return true;
   }
 
-  // 2. High-value paid channels (HBO, Cinemax, Star Movies, Sony MAX)
-  if (/(hbo|cinemax|star movies|sony max|beIN|sky sports premium)/i.test(lowerName)) {
-    return true;
+  // Create a deterministic hash from the channel name to mark exactly 70% of other channels as VIP
+  let hash = 0;
+  const str = (name || "") + "vip_salt_70";
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
   }
-
-  // 3. By default, standard live TV channels (Bangla, News, Sports, Entertainment, Kids) are FREE
-  return false;
+  return Math.abs(hash) % 10 < 7; // Exactly 70% are VIP
 }
 
 // Firestore Sync Helpers
@@ -1423,11 +1419,34 @@ app.get("/api/stream/:channelId", (req: Request, res: Response) => {
 // Cookie jar for proxy sessions (hostname -> cookie string)
 const proxyCookieJar = new Map<string, string>();
 
-app.get(["/api/proxy", "/api/proxy-stream"], (req, res) => {
-  const targetUrl = req.query.url as string;
+app.options(["/api/proxy", "/api/proxy-stream"], (_req: Request, res: Response) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).end();
+});
+
+app.head(["/api/proxy", "/api/proxy-stream"], (_req: Request, res: Response) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  return res.status(200).end();
+});
+
+app.get(["/api/proxy", "/api/proxy-stream"], (req: Request, res: Response) => {
+  let targetUrl = (req.query.url as string) || "";
+  const headers = req.query.headers as string;
+
   if (!targetUrl) {
     return res.status(400).send("Missing url parameter");
   }
+
+  if (headers && !targetUrl.includes("|")) {
+    targetUrl += "|" + headers;
+  }
+
   return proxyStreamRequest(targetUrl, req, res);
 });
 
@@ -1439,13 +1458,49 @@ function proxyStreamRequest(
   redirectCount = 0,
   retryCount = 0,
 ) {
-  if (redirectCount > 10) {
-    return res.status(502).send("Too many redirects");
+  if (req.destroyed || res.destroyed || res.writableEnded) {
+    return;
   }
 
-  if (retryCount > 15) {
-    return res.status(502).send("Too many connection retries");
+  if (redirectCount > 10) {
+    if (!res.headersSent) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.status(502).send("Too many redirects");
+    }
+    return;
   }
+
+  if (retryCount > 8) {
+    if (!res.headersSent) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.status(502).send("Too many connection retries");
+    }
+    return;
+  }
+
+  let activeRetryTimer: NodeJS.Timeout | null = null;
+  let activeProxyReq: http.ClientRequest | null = null;
+  let activeResponseStream: import("stream").Readable | null = null;
+  let activePassStream: import("stream").PassThrough | null = null;
+
+  const cancelRequest = () => {
+    if (activeRetryTimer) {
+      clearTimeout(activeRetryTimer);
+      activeRetryTimer = null;
+    }
+    if (activePassStream && !activePassStream.destroyed) {
+      try { activePassStream.destroy(); } catch (e) {}
+    }
+    if (activeResponseStream && !activeResponseStream.destroyed) {
+      try { activeResponseStream.destroy(); } catch (e) {}
+    }
+    if (activeProxyReq && !activeProxyReq.destroyed) {
+      try { activeProxyReq.destroy(); } catch (e) {}
+    }
+  };
+
+  req.once("close", cancelRequest);
+  res.once("close", cancelRequest);
 
   try {
     let actualUrl = targetUrl;
@@ -1457,9 +1512,6 @@ function proxyStreamRequest(
       "Cache-Control": "no-cache",
       "Pragma": "no-cache",
       "Connection": "keep-alive",
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "cross-site"
     };
 
     // Support IPTV URL header syntax: http://url|User-Agent=...&Referer=...
@@ -1539,7 +1591,6 @@ function proxyStreamRequest(
     delete reqHeaders["sec-ch-ua-platform"];
 
     // 🛡️ PRESERVE AND NORMALIZE CUSTOM HEADERS (from playlist URL suffix e.g. |User-Agent=...&Referer=...)
-    // This is critical because many IPTV links require exact User-Agent, Referer, or Origin to authenticate!
     let hasCustomUA = false;
     let hasCustomReferer = false;
     let hasCustomOrigin = false;
@@ -1567,14 +1618,28 @@ function proxyStreamRequest(
       }
     }
 
-    // Set high-compatibility Media Player User-Agent ONLY if not custom-defined (standard browsers are blocked by IPTV)
+    // Set smart User-Agent based on target host (Browsers for CDN/Cloudfront/Akamai/Amagi, IPTVSmarters for IPTV hosts)
     if (!hasCustomUA) {
-      reqHeaders["User-Agent"] = "IPTVSmarters/3.1.5 (Android/11)";
+      const isMajorCdn = hostname.includes("amagi") ||
+                         hostname.includes("akamaized") ||
+                         hostname.includes("cloudfront") ||
+                         hostname.includes("doubleclick") ||
+                         hostname.includes("google") ||
+                         hostname.includes("fastly") ||
+                         hostname.includes("armelin") ||
+                         hostname.includes("r2.dev") ||
+                         hostname.includes("streamhoster") ||
+                         hostname.includes("youtube") ||
+                         hostname.includes("cgtn");
+      if (isMajorCdn) {
+        reqHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+      } else {
+        reqHeaders["User-Agent"] = "IPTVSmarters/3.1.5 (Android/11)";
+      }
     }
 
     reqHeaders["Accept"] = "*/*";
 
-    // Do NOT send fake Referer or Origin unless custom-defined, as commercial IPTV servers (Xtream, OTT Navigator targets) block web origins!
     if (!hasCustomReferer) {
       delete reqHeaders["Referer"];
       delete reqHeaders["referer"];
@@ -1583,16 +1648,6 @@ function proxyStreamRequest(
       delete reqHeaders["Origin"];
       delete reqHeaders["origin"];
     }
-    
-    // Completely remove browser Sec-Fetch-* headers so upstream IPTV servers treat proxy like IPTV Smarters / VLC on phone
-    delete reqHeaders["Sec-Fetch-Dest"];
-    delete reqHeaders["Sec-Fetch-Mode"];
-    delete reqHeaders["Sec-Fetch-Site"];
-    delete reqHeaders["Sec-Fetch-User"];
-    delete reqHeaders["sec-fetch-dest"];
-    delete reqHeaders["sec-fetch-mode"];
-    delete reqHeaders["sec-fetch-site"];
-    delete reqHeaders["sec-fetch-user"];
 
     if (req.headers.range) reqHeaders["Range"] = req.headers.range as string;
 
@@ -1604,33 +1659,30 @@ function proxyStreamRequest(
       rejectUnauthorized: false,
       servername: parsedUrl.hostname,
       ciphers: "DEFAULT:@SECLEVEL=1:ALL",
-      timeout: 12000,
+      timeout: 15000,
       agent: parsedUrl.protocol === "https:" ? httpsAgent : httpAgent,
     };
 
-    if (actualUrl.includes("banglavu.top") || actualUrl.includes("banglaview.online") || actualUrl.includes("gpcdn.net")) {
-      console.log(`[Proxy] Requesting URL: ${actualUrl}`);
-      console.log(`[Proxy] Request Headers: ${JSON.stringify(reqHeaders, null, 2)}`);
-    }
-
     const proxyReq = client.get(actualUrl, options, (proxyRes) => {
-      if (actualUrl.includes("banglavu.top") || actualUrl.includes("banglaview.online") || actualUrl.includes("gpcdn.net")) {
-        console.log(`[Proxy] Response from ${hostname}: ${proxyRes.statusCode}`);
-        console.log(`[Proxy] Response Headers: ${JSON.stringify(proxyRes.headers, null, 2)}`);
-      } else {
-        console.log(`[Proxy] Connected to ${actualUrl}, status: ${proxyRes.statusCode}`);
+      if (req.destroyed || res.destroyed || res.writableEnded) {
+        proxyRes.destroy();
+        return;
       }
+
+      console.log(`[Proxy] Connected to ${actualUrl}, status: ${proxyRes.statusCode}`);
       const setCookie = proxyRes.headers["set-cookie"];
       if (setCookie) {
         const cookies = Array.isArray(setCookie) ? setCookie.join("; ") : setCookie;
         proxyCookieJar.set(hostname, cookies);
       }
+
       // Follow HTTP redirects (301, 302, 303, 307, 308)
       if (
         proxyRes.statusCode &&
         [301, 302, 303, 307, 308].includes(proxyRes.statusCode) &&
         proxyRes.headers.location
       ) {
+        proxyRes.destroy();
         let redirectUrl = new URL(proxyRes.headers.location, actualUrl).href;
         if (customHeaderSuffix) {
           redirectUrl += "|" + customHeaderSuffix;
@@ -1646,38 +1698,50 @@ function proxyStreamRequest(
       }
 
       if (proxyRes.statusCode && proxyRes.statusCode >= 400) {
-        if (proxyRes.statusCode === 404 && retryCount < 2) {
+        proxyRes.destroy();
+
+        if (proxyRes.statusCode === 404 && retryCount < 2 && !req.destroyed && !res.destroyed) {
           console.warn(`[Proxy] Transient 404 for ${targetUrl}, retrying...`);
-          return setTimeout(() => {
-            proxyStreamRequest(targetUrl, req, res, redirectCount, retryCount + 1);
-          }, 1000);
+          activeRetryTimer = setTimeout(() => {
+            if (!req.destroyed && !res.destroyed && !res.writableEnded) {
+              proxyStreamRequest(targetUrl, req, res, redirectCount, retryCount + 1);
+            }
+          }, 800);
+          return;
         }
         
-        if ((proxyRes.statusCode === 403 || proxyRes.statusCode === 401 || proxyRes.statusCode === 429) && retryCount < 3) {
+        if ((proxyRes.statusCode === 403 || proxyRes.statusCode === 401 || proxyRes.statusCode === 429) && retryCount < 3 && !req.destroyed && !res.destroyed) {
           const alternateUAs = [
             "IPTVSmarters/3.1.5 (Android/11)",
             "VLC/3.0.18 LibVLC/3.0.18",
-            "OTT Navigator/1.6.8.2 (Linux; Android 11)"
+            "OTT Navigator/1.6.8.2 (Linux; Android 11)",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
           ];
           const newUA = alternateUAs[retryCount] || alternateUAs[0];
           console.warn(`[Proxy] ${proxyRes.statusCode} for ${targetUrl}, retrying with User-Agent: ${newUA}...`);
-          return setTimeout(() => {
-            const cleanUrl = targetUrl.split("|")[0];
-            proxyStreamRequest(`${cleanUrl}|User-Agent=${encodeURIComponent(newUA)}`, req, res, redirectCount, retryCount + 1);
+          activeRetryTimer = setTimeout(() => {
+            if (!req.destroyed && !res.destroyed && !res.writableEnded) {
+              const cleanUrl = targetUrl.split("|")[0];
+              proxyStreamRequest(`${cleanUrl}|User-Agent=${encodeURIComponent(newUA)}`, req, res, redirectCount, retryCount + 1);
+            }
           }, 300);
+          return;
         }
 
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Headers", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-        res.setHeader("Content-Type", "text/plain");
-        return res
-          .status(proxyRes.statusCode)
-          .send(
-            proxyRes.statusCode === 429
-              ? "Rate Limit Exceeded (10000)"
-              : `Stream Server Error: ${proxyRes.statusCode}`,
-          );
+        if (!res.headersSent) {
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Headers", "*");
+          res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+          res.setHeader("Content-Type", "text/plain");
+          return res
+            .status(proxyRes.statusCode)
+            .send(
+              proxyRes.statusCode === 429
+                ? "Rate Limit Exceeded"
+                : `Stream Server Error: ${proxyRes.statusCode}`,
+            );
+        }
+        return;
       }
 
       const contentType = (
@@ -1687,6 +1751,7 @@ function proxyStreamRequest(
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Headers", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
@@ -1702,14 +1767,15 @@ function proxyStreamRequest(
         responseStream = proxyRes.pipe(zlib.createBrotliDecompress());
       }
 
-      // Check if this is a known binary media segment (.ts, .mp4, .m4s, .aac, .key, etc.)
+      activeResponseStream = responseStream;
+
+      // Check if this is a known M3U8 playlist
       const isM3U8ContentType = contentType.includes("mpegurl") ||
                                  contentType.includes("m3u8") ||
                                  actualUrl.match(/\.m3u8(\?.*)?$/i) !== null;
 
       const isKnownBinaryMedia = !isM3U8ContentType && (
         actualUrl.match(/\.(ts|mp4|m4s|m4a|aac|mp3|flv|key|jpg|png|jpeg)(\?.*)?$/i) ||
-        actualUrl.includes("/live/") ||
         actualUrl.includes("/movie/") ||
         actualUrl.includes("/series/") ||
         contentType.includes("video/") ||
@@ -1735,12 +1801,13 @@ function proxyStreamRequest(
       }
 
       if (isKnownBinaryMedia) {
-        // Stream binary video/audio fragments directly with zero latency
+        // Direct zero-overhead streaming for high-speed media segments (.ts, .mp4, .m4s, .aac)
         const responseHeaders: Record<string, string | string[]> = {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Headers": "*",
           "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-          "Content-Type": resolvedContentType,
+          "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+          "Content-Type": isTsFormat ? "video/mp2t" : resolvedContentType || "video/mp2t",
         };
 
         if (proxyRes.headers["content-length"] && !encoding)
@@ -1750,40 +1817,52 @@ function proxyStreamRequest(
         if (proxyRes.headers["accept-ranges"])
           responseHeaders["Accept-Ranges"] = proxyRes.headers["accept-ranges"];
 
-        res.writeHead(proxyRes.statusCode || 200, responseHeaders);
+        if (!res.headersSent) {
+          res.writeHead(proxyRes.statusCode || 200, responseHeaders);
+        }
 
         responseStream.pipe(res).on("error", (err: any) => {
           if (err.code !== "ERR_STREAM_PREMATURE_CLOSE" && err.code !== "ECONNRESET") {
-            console.warn("[Proxy] Direct stream pipe warning:", err.message);
+            console.warn("[Proxy] Direct segment stream pipe warning:", err.message);
           }
-        });
-
-        req.on("close", () => {
-          if (!proxyReq.destroyed) proxyReq.destroy();
         });
         return;
       }
-      
-      // Otherwise, inspect M3U8 text playlist for URL rewriting
+
+      // Inspect first chunk to accurately detect M3U8 text playlists vs binary media streams (MPEG-TS, MP4, AAC)
       let firstChunkProcessed = false;
       responseStream.once("data", (chunk: Buffer) => {
         firstChunkProcessed = true;
         const chunkStr = chunk.toString("utf8");
-        const isM3U8Text =
-          isM3U8ContentType ||
-          chunkStr.startsWith("#EXTM3U") ||
-          chunkStr.startsWith("#EXT-X-") ||
-          chunkStr.includes("#EXTM3U") ||
-          chunkStr.includes("#EXTINF:") ||
-          actualUrl.match(/\.m3u8(\?.*)?$/i) !== null;
 
-        if (isM3U8Text) {
+        // TS sync byte is 0x47. Check if chunk contains binary bytes
+        const isTsSyncByte = chunk.length > 0 && chunk[0] === 0x47;
+        let hasNullByte = false;
+        const checkLen = Math.min(chunk.length, 256);
+        for (let j = 0; j < checkLen; j++) {
+          if (chunk[j] === 0) {
+            hasNullByte = true;
+            break;
+          }
+        }
+
+        const isRealM3U8Text =
+          !isTsSyncByte &&
+          !hasNullByte &&
+          (chunkStr.startsWith("#EXTM3U") ||
+           chunkStr.startsWith("#EXT-X-") ||
+           chunkStr.includes("#EXTM3U") ||
+           chunkStr.includes("#EXTINF:"));
+
+        if (isRealM3U8Text) {
           let fullData = chunkStr;
           responseStream.setEncoding("utf8");
           responseStream.on("data", (moreData) => {
             fullData += moreData;
           });
           responseStream.on("end", () => {
+            if (res.headersSent || res.destroyed || res.writableEnded) return;
+
             const cleanData = fullData.replace(/^\uFEFF/, "").trim();
             const isM3U8Content =
               cleanData.startsWith("#EXTM3U") ||
@@ -1803,8 +1882,6 @@ function proxyStreamRequest(
                 .send(cleanData);
             }
             
-            console.log(`Processing M3U8 text. actualUrl: ${actualUrl}, length: ${cleanData.length}`);
-
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
 
             const lines = fullData.split(/\r?\n/);
@@ -1813,7 +1890,7 @@ function proxyStreamRequest(
               if (!trimmed) return line;
 
               // If already proxied, leave it alone
-              if (trimmed.includes("/api/proxy?url=")) return line;
+              if (trimmed.includes("/api/proxy?url=") || trimmed.includes("/api/proxy-stream?url=")) return line;
 
               // Check for tags containing URIs
               if (trimmed.startsWith("#")) {
@@ -1823,44 +1900,49 @@ function proxyStreamRequest(
                       const rawUri = q1 || q2 || q3;
                       if (!rawUri) return _match;
                       
-                      // Skip if already proxied
-                      if (rawUri.includes("/api/proxy?url=")) return _match;
+                      if (rawUri.includes("/api/proxy?url=") || rawUri.includes("/api/proxy-stream?url=")) return _match;
 
-                      const absUriObj = new URL(rawUri, actualUrl);
-                      // Handle search params for master playlists if necessary
-                      const baseUrlObj = new URL(actualUrl);
-                      if (!absUriObj.search && baseUrlObj.search) {
-                        absUriObj.search = baseUrlObj.search;
+                      try {
+                        const absUriObj = new URL(rawUri, actualUrl);
+                        const baseUrlObj = new URL(actualUrl);
+                        if (!absUriObj.search && baseUrlObj.search) {
+                          absUriObj.search = baseUrlObj.search;
+                        }
+                        let absUri = absUriObj.href;
+                        if (customHeaderSuffix) absUri += "|" + customHeaderSuffix;
+                        return `URI="/api/proxy?url=${encodeURIComponent(absUri)}"`;
+                      } catch (e) {
+                        return _match;
                       }
-                      
-                      let absUri = absUriObj.href;
-                      if (customHeaderSuffix) absUri += "|" + customHeaderSuffix;
-                      
-                      return `URI="/api/proxy?url=${encodeURIComponent(absUri)}"`;
                     }
                   );
               }
               
               // Process standard segment URL lines
-              const absUrlObj = new URL(trimmed, actualUrl);
-              const baseUrlObj = new URL(actualUrl);
-              if (!absUrlObj.search && baseUrlObj.search) {
-                absUrlObj.search = baseUrlObj.search;
+              try {
+                const absUrlObj = new URL(trimmed, actualUrl);
+                const baseUrlObj = new URL(actualUrl);
+                if (!absUrlObj.search && baseUrlObj.search) {
+                  absUrlObj.search = baseUrlObj.search;
+                }
+                let absUrl = absUrlObj.href;
+                if (customHeaderSuffix) absUrl += "|" + customHeaderSuffix;
+                return `/api/proxy?url=${encodeURIComponent(absUrl)}`;
+              } catch (e) {
+                return line;
               }
-              let absUrl = absUrlObj.href;
-              if (customHeaderSuffix) absUrl += "|" + customHeaderSuffix;
-              return `/api/proxy?url=${encodeURIComponent(absUrl)}`;
             });
 
             res.status(200).send(rewrittenLines.join("\n"));
           });
         } else {
-          // Binary video/audio stream (TS segment, MP4 fragment, AAC, etc.)
+          // Binary video/audio stream (TS segment, MP4 fragment, live continuous TS stream)
           const responseHeaders: Record<string, string | string[]> = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "*",
             "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Content-Type": resolvedContentType,
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+            "Content-Type": isTsSyncByte || isTsFormat ? "video/mp2t" : resolvedContentType || "video/mp2t",
           };
 
           if (proxyRes.headers["content-length"] && !encoding)
@@ -1870,41 +1952,19 @@ function proxyStreamRequest(
           if (proxyRes.headers["accept-ranges"])
             responseHeaders["Accept-Ranges"] = proxyRes.headers["accept-ranges"];
 
-          const pass = new stream.PassThrough({ highWaterMark: 1024 * 1024 }); // 1MB server-side buffer for smoother streaming
-          res.writeHead(proxyRes.statusCode || 200, responseHeaders);
-          
-          res.on("close", () => {
-            if (!pass.destroyed) {
-               pass.unpipe(res);
-               pass.destroy();
-            }
-          });
-          
-          pass.on("error", (err: any) => {
-             if (err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
-               console.warn("[Proxy] PassThrough error:", err.message);
-             }
-             if (!res.writableEnded) res.end();
-          });
+          const pass = new stream.PassThrough({ highWaterMark: 1024 * 1024 });
+          activePassStream = pass;
 
+          if (!res.headersSent) {
+            res.writeHead(proxyRes.statusCode || 200, responseHeaders);
+          }
+          
           pass.pipe(res);
           pass.write(chunk);
           
-          responseStream.on("error", (err: any) => {
-            if (err.message?.includes("aborted") || err.code === "ECONNRESET" || err.message?.includes("premature close")) {
-              console.warn(`[Proxy] Response stream ended (${err.message || "aborted"}) for ${actualUrl}`);
-            } else {
-              console.error(`[Proxy] Response stream error for ${actualUrl}:`, err.message);
-            }
-            pass.destroy();
-            proxyReq.destroy();
-          });
-
           responseStream.pipe(pass).on("error", (pipeErr: any) => {
-            if (pipeErr.code === "ECONNRESET" || pipeErr.message?.includes("socket hang up")) {
-              console.warn("Proxy pipe connection reset:", pipeErr.message);
-            } else {
-              console.error("Proxy pipe error:", pipeErr.message);
+            if (pipeErr.code !== "ERR_STREAM_PREMATURE_CLOSE" && pipeErr.code !== "ECONNRESET") {
+              console.warn("Proxy pipe error:", pipeErr.message);
             }
             pass.destroy();
             proxyReq.destroy();
@@ -1913,32 +1973,32 @@ function proxyStreamRequest(
       });
 
       responseStream.on("end", () => {
-        if (!firstChunkProcessed && !res.headersSent) {
+        if (!firstChunkProcessed && !res.headersSent && !res.destroyed && !res.writableEnded) {
           res.status(200).send("");
         }
       });
     });
 
-    req.on("close", () => {
-      if (!proxyReq.destroyed) {
-        proxyReq.destroy();
-      }
-    });
+    activeProxyReq = proxyReq;
 
     proxyReq.setTimeout(15000, () => {
       console.error(`Stream proxy timeout for ${targetUrl}`);
       proxyReq.destroy();
-      if (!res.headersSent) {
+      if (!res.headersSent && !res.destroyed && !res.writableEnded) {
         res
           .status(504)
           .send(
-            `Stream Connection Timed Out: The source at ${new URL(targetUrl).hostname} is unresponsive.`,
+            `Stream Connection Timed Out: The source is unresponsive.`,
           );
       }
     });
 
     proxyReq.on("error", (err: any) => {
-      console.warn(`[Proxy] Stream warning for ${actualUrl} (Target: ${targetUrl}):`, err.message);
+      if (req.destroyed || res.destroyed || res.writableEnded) {
+        return;
+      }
+
+      console.warn(`[Proxy] Stream warning for ${actualUrl}:`, err.message);
       const retryCodes = [
         "EAI_AGAIN",
         "ECONNRESET",
@@ -1963,106 +2023,48 @@ function proxyStreamRequest(
           err.message.includes("connection reset")
         );
       const isRetryable = retryCodes.includes(err.code) || isSocketOrTlsError;
-      // Limit retries to 2 to fail fast and prevent endless spinner for offline/dead streams
-      const maxRetries = 2;
+      const maxRetries = 3;
 
       if (isRetryable && retryCount < maxRetries && !res.headersSent) {
         let nextTargetUrl = targetUrl;
 
-        // If HTTPS failed, retry with HTTP. If HTTP already failed, don't keep flipping back and forth immediately.
         if (actualUrl.startsWith("https://") && (isSocketOrTlsError || err.code === "EPROTO" || err.code === "ECONNRESET" || err.code === "ECONNREFUSED")) {
           try {
             const failedHost = new URL(actualUrl).hostname.toLowerCase();
             knownNonSslDomains.add(failedHost);
-            console.info(`[Proxy] Recorded non-SSL domain '${failedHost}' in auto-normalization cache.`);
           } catch (e) {}
           nextTargetUrl = actualUrl.replace("https://", "http://");
-          console.info(`[Proxy] HTTPS request failed for ${actualUrl} (${err.message}), retrying immediately with HTTP: ${nextTargetUrl}`);
           return proxyStreamRequest(nextTargetUrl, req, res, redirectCount, retryCount);
-        } else if (targetUrl.startsWith("http://") && (err.code === "ECONNREFUSED" || err.code === "EPROTO")) {
-          // If HTTP failed, maybe try HTTPS again but only after a delay, or just stick to current protocol with backoff
-          console.warn(`[Proxy] HTTP connection refused for ${targetUrl} (${err.message}), sticking to protocol with backoff.`);
-          nextTargetUrl = targetUrl;
-        } else if (targetUrl.includes("banglaview.online") && retryCount >= 1) {
-          nextTargetUrl = targetUrl.replace("banglaview.online", "banglavu.top");
-          if (nextTargetUrl.startsWith("https://")) nextTargetUrl = nextTargetUrl.replace("https://", "http://");
-          console.warn(`[Proxy] Retrying banglaview.online with banglavu.top fallback: ${nextTargetUrl}`);
-        } else if (targetUrl.includes("banglavu.top") && retryCount >= 2) {
-          nextTargetUrl = targetUrl.replace("banglavu.top", "banglaview.online");
-          if (nextTargetUrl.startsWith("https://")) nextTargetUrl = nextTargetUrl.replace("https://", "http://");
-          console.warn(`[Proxy] Retrying banglavu.top with banglaview.online fallback: ${nextTargetUrl}`);
         }
 
-        // Use a fast-responding backoff capped at 2s so offline streams fail fast rather than hanging the player
         const isDnsError = err.code === "EAI_AGAIN" || err.code === "ENOTFOUND";
-        const baseDelay = isDnsError ? 500 : 150;
-        const backoff = Math.min(baseDelay * Math.pow(1.5, retryCount), 2000);
+        const baseDelay = isDnsError ? 400 : 150;
+        const backoff = Math.min(baseDelay * Math.pow(1.5, retryCount), 1500);
         
-        console.warn(`Proxy retry ${retryCount + 1}/${maxRetries} for ${nextTargetUrl} due to ${err.code || err.message} in ${Math.round(backoff)}ms`);
-        return setTimeout(() => {
-          proxyStreamRequest(nextTargetUrl, req, res, redirectCount, retryCount + 1);
+        activeRetryTimer = setTimeout(() => {
+          if (!req.destroyed && !res.destroyed && !res.writableEnded) {
+            proxyStreamRequest(nextTargetUrl, req, res, redirectCount, retryCount + 1);
+          }
         }, backoff);
+        return;
       }
 
-      // Log DNS/Unreachable errors as warnings, and genuine server runtime failures as errors
-      if (err.code === "ENOTFOUND" || err.code === "EAI_AGAIN") {
-        console.warn(`Stream proxy domain unreachable (${err.code}):`, err.message, "Target:", targetUrl);
-      } else if (err.code === "ECONNRESET" || err.message.includes("socket hang up")) {
-        console.warn(`Stream proxy connection reset/hangup (${err.code || "HANGUP"}):`, err.message, "Target:", targetUrl);
-      } else {
-        console.warn(
-          "Final Stream proxy warning:",
-          err.message,
-          "Code:",
-          err.code,
-          "Attempts:",
-          retryCount,
-          "HeadersSent:",
-          res.headersSent,
-        );
-      }
-
-      if (!res.headersSent) {
-        let errorMsg = `Proxy Stream Connection Error: ${err.message}`;
-        if (err.code === "ENOTFOUND") {
-          errorMsg = `Stream Host Not Found: ${new URL(targetUrl).hostname} is offline or unreachable.`;
-        } else if (err.code === "EAI_AGAIN") {
-          errorMsg = `DNS Resolution Failure: Temporary failure resolving ${new URL(targetUrl).hostname}.`;
-        } else if (err.code === "ETIMEDOUT" || err.code === "ECONNABORTED") {
-          errorMsg = `Stream Connection Timed Out: The source at ${new URL(targetUrl).hostname} is unresponsive after multiple retries.`;
-        } else if (err.code === "ECONNREFUSED") {
-          errorMsg = `Connection Refused: The source at ${new URL(targetUrl).hostname} refused the connection.`;
-        }
-        res.status(502).send(errorMsg);
+      if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Headers", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.status(502).send(`Stream Proxy Connection Error: ${err.message}`);
       }
     });
-  } catch (e) {
-    if (!res.headersSent) {
-      res.status(400).send("Invalid Stream URL");
+  } catch (err: any) {
+    if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      res.status(500).send(`Internal Proxy Error: ${err.message}`);
     }
   }
 }
-
-// Proxy Stream Endpoint to bypass CORS and mixed-content restrictions
-app.options("/api/proxy-stream", (_req: Request, res: Response) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  res.sendStatus(200);
-});
-
-app.get("/api/proxy-stream", (req: Request, res: Response) => {
-  let targetUrl = req.query.url as string;
-  const headers = req.query.headers as string;
-  
-  if (!targetUrl) return res.status(400).send("URL required");
-  
-  if (headers && !targetUrl.includes("|")) {
-    targetUrl += "|" + headers;
-  }
-  
-  proxyStreamRequest(targetUrl, req, res);
-});
 
 // EPG Timeline Data
 app.get("/api/epg", (req: Request, res: Response) => {
@@ -3077,4 +3079,9 @@ async function start() {
   });
 }
 
-start();
+export default app;
+export { app };
+
+if (process.env.VERCEL !== "1") {
+  start();
+}

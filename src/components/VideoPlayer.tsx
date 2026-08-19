@@ -80,191 +80,6 @@ import { Channel, EPGProgram, User, ThemeId } from "../types";
 import { THEMES } from "./ThemeSelector";
 import { calculateEpgProgress } from "../utils/epgUtils";
 
-function createDummySourceBuffer() {
-  let eventTarget: EventTarget;
-  try {
-    eventTarget = new EventTarget();
-  } catch (e) {
-    // Fallback if EventTarget is not a constructor
-    eventTarget = document.createElement("div");
-  }
-  let updating = false;
-  let mode = "segments";
-  let timestampOffset = 0;
-  let appendWindowStart = 0;
-  let appendWindowEnd = Infinity;
-
-  const dummyTimeRanges = {
-    length: 0,
-    start: (_i: number) => 0,
-    end: (_i: number) => 0,
-  };
-
-  const dummySb: any = {
-    __isDummy: true,
-    get updating() { return updating; },
-    get buffered() { return dummyTimeRanges; },
-    get mode() { return mode; },
-    set mode(val) { mode = val; },
-    get timestampOffset() { return timestampOffset; },
-    set timestampOffset(val) { timestampOffset = val; },
-    get appendWindowStart() { return appendWindowStart; },
-    set appendWindowStart(val) { appendWindowStart = val; },
-    get appendWindowEnd() { return appendWindowEnd; },
-    set appendWindowEnd(val) { appendWindowEnd = val; },
-
-    onupdatestart: null,
-    onupdate: null,
-    onupdateend: null,
-    onerror: null,
-    onabort: null,
-
-    addEventListener: (type: string, listener: any, options?: any) => {
-      eventTarget.addEventListener(type, listener, options);
-    },
-    removeEventListener: (type: string, listener: any, options?: any) => {
-      eventTarget.removeEventListener(type, listener, options);
-    },
-    dispatchEvent: (event: Event) => {
-      return eventTarget.dispatchEvent(event);
-    },
-
-    appendBuffer: (_data: any) => {
-      updating = true;
-      if (typeof dummySb.onupdatestart === "function") {
-        try { dummySb.onupdatestart(new Event("updatestart")); } catch (e) {}
-      }
-      eventTarget.dispatchEvent(new Event("updatestart"));
-
-      setTimeout(() => {
-        updating = false;
-        if (typeof dummySb.onupdate === "function") {
-          try { dummySb.onupdate(new Event("update")); } catch (e) {}
-        }
-        eventTarget.dispatchEvent(new Event("update"));
-
-        if (typeof dummySb.onupdateend === "function") {
-          try { dummySb.onupdateend(new Event("updateend")); } catch (e) {}
-        }
-        eventTarget.dispatchEvent(new Event("updateend"));
-      }, 0);
-    },
-
-    remove: (_start: number, _end: number) => {
-      updating = true;
-      setTimeout(() => {
-        updating = false;
-        if (typeof dummySb.onupdateend === "function") {
-          try { dummySb.onupdateend(new Event("updateend")); } catch (e) {}
-        }
-        eventTarget.dispatchEvent(new Event("updateend"));
-      }, 0);
-    },
-
-    abort: () => {
-      updating = false;
-    },
-
-    changeType: (_type: string) => {},
-  };
-
-  if (typeof window !== "undefined" && window.SourceBuffer) {
-    try {
-      Object.setPrototypeOf(dummySb, SourceBuffer.prototype);
-    } catch (e) {}
-  }
-
-  return dummySb;
-}
-
-try {
-  if (typeof window !== "undefined" && window.MediaSource && !(window as any).__mediaSourceAc3Patched) {
-    (window as any).__mediaSourceAc3Patched = true;
-    const originalAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
-    const originalRemoveSourceBuffer = MediaSource.prototype.removeSourceBuffer;
-
-    MediaSource.prototype.addSourceBuffer = function (type: string) {
-      if (type && !MediaSource.isTypeSupported(type)) {
-        console.warn(`[MediaSource Guard] Intercepted unsupported codec in addSourceBuffer: '${type}'. Providing fallback dummy SourceBuffer.`);
-        return createDummySourceBuffer();
-      }
-      try {
-        return originalAddSourceBuffer.call(this, type);
-      } catch (err: any) {
-        console.warn(`[MediaSource Guard] addSourceBuffer failed for '${type}': ${err.message}. Providing fallback dummy SourceBuffer.`);
-        return createDummySourceBuffer();
-      }
-    };
-
-    MediaSource.prototype.removeSourceBuffer = function (sb: any) {
-      if (sb && sb.__isDummy) {
-        console.warn(`[MediaSource Guard] Intercepted removeSourceBuffer for dummy SourceBuffer.`);
-        return;
-      }
-      try {
-        return originalRemoveSourceBuffer.call(this, sb);
-      } catch (err: any) {
-        console.warn(`[MediaSource Guard] removeSourceBuffer safely caught error: ${err.message}`);
-      }
-    };
-  }
-} catch (e) {
-  console.warn("Failed to patch MediaSource prototype:", e);
-}
-
-try {
-  if (typeof window !== "undefined" && window.SourceBuffer && !(window as any).__sourceBufferGuarded) {
-    (window as any).__sourceBufferGuarded = true;
-    const origAppendBuffer = SourceBuffer.prototype.appendBuffer;
-    SourceBuffer.prototype.appendBuffer = function (data: any) {
-      try {
-        return origAppendBuffer.call(this, data);
-      } catch (err: any) {
-        console.warn(`[SourceBuffer Guard] appendBuffer safely caught error: ${err.message}`);
-      }
-    };
-
-    const origAddEventListener = SourceBuffer.prototype.addEventListener;
-    SourceBuffer.prototype.addEventListener = function (type: string, listener: any, options?: any) {
-      if (type === "error") {
-        const wrappedListener = function (this: any, event: Event) {
-          console.warn(`[SourceBuffer Guard] Caught SourceBuffer error event gracefully.`);
-          if (typeof listener === "function") {
-            try {
-              listener.call(this, event);
-            } catch (e) {
-              console.warn(`[SourceBuffer Guard] Error in SourceBuffer error listener:`, e);
-            }
-          }
-        };
-        return origAddEventListener.call(this, type, wrappedListener, options);
-      }
-      return origAddEventListener.call(this, type, listener, options);
-    };
-
-    const origBufferedDesc = Object.getOwnPropertyDescriptor(SourceBuffer.prototype, "buffered");
-    if (origBufferedDesc && origBufferedDesc.get) {
-      Object.defineProperty(SourceBuffer.prototype, "buffered", {
-        get: function (this: any) {
-          try {
-            return origBufferedDesc.get!.call(this);
-          } catch (err: any) {
-            return {
-              length: 0,
-              start: () => 0,
-              end: () => 0,
-            };
-          }
-        },
-        configurable: true,
-        enumerable: true,
-      });
-    }
-  }
-} catch (e) {
-  console.warn("Failed to patch SourceBuffer prototype:", e);
-}
-
 interface VideoPlayerProps {
   channel: Channel | null;
   currentEpg?: EPGProgram | null;
@@ -549,24 +364,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const saved = localStorage.getItem("myiptv_settings");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.streamProxyEnabled !== undefined) {
+        if (typeof parsed.streamProxyEnabled === "boolean") {
           return parsed.streamProxyEnabled;
         }
       }
     } catch (e) {}
-    return false;
+    return true; // Default ON
   });
 
   useEffect(() => {
-    const handleSettingsUpdate = (e: any) => {
-      const updatedSettings = e.detail;
-      if (updatedSettings && updatedSettings.streamProxyEnabled !== undefined) {
-        setStreamProxyEnabled(updatedSettings.streamProxyEnabled);
-      }
+    const handleSettingsUpdate = () => {
+      try {
+        const saved = localStorage.getItem("myiptv_settings");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (typeof parsed.streamProxyEnabled === "boolean") {
+            setStreamProxyEnabled(parsed.streamProxyEnabled);
+          }
+        }
+      } catch (e) {}
     };
+
     window.addEventListener("myiptv_settings_updated", handleSettingsUpdate);
+    window.addEventListener("storage", handleSettingsUpdate);
     return () => {
       window.removeEventListener("myiptv_settings_updated", handleSettingsUpdate);
+      window.removeEventListener("storage", handleSettingsUpdate);
     };
   }, []);
 
@@ -588,13 +411,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return;
     }
 
-    setCountdown(3);
+    setCountdown(1);
 
     if (countdownIntervalRef.current)
       clearInterval(countdownIntervalRef.current);
     countdownIntervalRef.current = setInterval(() => {
       setCountdown((prev) => Math.max(0, prev - 1));
-    }, 1000);
+    }, 500);
 
     const timeout = setTimeout(() => {
       const finalNum = parseInt(numberBuffer, 10);
@@ -605,7 +428,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onSelectChannelRef.current(finalTarget);
       }
       setNumberBuffer("");
-    }, 3500); // 3.5 seconds to allow for 3+ digit entries
+    }, 700); // 700ms quick tune on remote/keyboard number entry
 
     return () => {
       clearTimeout(timeout);
@@ -772,44 +595,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const isPremiumLocked =
     channel?.isPremium && !isSubscriptionActive && !unlockedChannels[channel?.id || ""];
 
-  // Smart DNS Prefetching and Light Connection Pre-warming for Adjacent Channels
+  const [proxyAttempted, setProxyAttempted] = useState<boolean>(false);
+  const [directAttempted, setDirectAttempted] = useState<boolean>(false);
+
+  // Reset fallback states when channel changes
   useEffect(() => {
-    if (!channel || !allChannels || allChannels.length === 0) return;
+    setProxyAttempted(false);
+    setDirectAttempted(false);
+    setForceDirect(false);
+    setRetryCount(0);
+    setErrorMsg(null);
+  }, [channel?.id]);
 
-    const prewarmTimer = setTimeout(() => {
-      try {
-        const currentIdx = allChannels.findIndex((c) => c.id === channel.id);
-        if (currentIdx === -1) return;
-
-        const nextIdx = (currentIdx + 1) % allChannels.length;
-        const prevIdx = (currentIdx - 1 + allChannels.length) % allChannels.length;
-
-        const adjacentChannels = [allChannels[nextIdx], allChannels[prevIdx]].filter(
-          (c) => c && c.id !== channel.id && !c.isPremium
-        );
-
-        adjacentChannels.forEach((adjChannel) => {
-          let targetUrl = adjChannel.streamUrl;
-          if (!targetUrl) return;
-
-          try {
-            const raw = targetUrl.split("|")[0];
-            const urlObj = new URL(raw);
-            const link = document.createElement("link");
-            link.rel = "dns-prefetch";
-            link.href = urlObj.origin;
-            document.head.appendChild(link);
-            setTimeout(() => {
-              if (link.parentNode) link.parentNode.removeChild(link);
-            }, 5000);
-          } catch (e) {}
-        });
-      } catch (err) {}
-    }, 500);
-
-    return () => clearTimeout(prewarmTimer);
-  }, [channel, allChannels]);
-
+  // Standard Channel Loading
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !channel || isPremiumLocked) {
@@ -824,7 +622,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return;
     }
 
-    // Instantly reset video state and destroy previous player for rapid channel switching
+    // Reset video state and destroy previous player
     if (playerRef.current) {
       if (typeof playerRef.current.stopLoad === "function") {
         try { playerRef.current.stopLoad(); } catch (e) {}
@@ -841,7 +639,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     setErrorMsg(null);
     setRetryCount(0);
-    setForceDirect(false);
     setIsBuffering(true);
     setShowBufferSpinner(false);
 
@@ -862,8 +659,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return `${window.location.origin}${path.startsWith("/") ? "" : "/"}${path}`;
     };
 
-    const getEffectiveUrl = (rawUrl?: string, forceDirect = false) => {
-      const urlStr = typeof rawUrl === "string" ? rawUrl : "";
+    const getEffectiveUrl = (rawUrl?: string, forceDirectParam = false) => {
+      const urlStr = typeof rawUrl === "string" ? rawUrl.trim() : "";
       if (!urlStr) return "";
       
       if (
@@ -873,22 +670,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ) {
         return getAbsoluteUrl(urlStr);
       }
-      
+
+      if (forceDirectParam) {
+        return urlStr.split("|")[0];
+      }
+
+      const hasHeaders = urlStr.includes("|");
       const isHttpsPage = typeof window !== "undefined" && window.location.protocol === "https:";
       const isHttpStream = urlStr.startsWith("http://");
-      const hasHeaders = urlStr.includes("|");
 
-      // Only route through server proxy if:
-      // 1. streamProxyEnabled is true
-      // 2. Or it is an HTTP stream on an HTTPS page (to bypass Mixed Content blocking)
-      // 3. Or it has custom headers (headers need to be injected on server side)
-      if (
-        (streamProxyEnabled || (isHttpsPage && isHttpStream) || hasHeaders) &&
-        !forceDirect &&
-        (urlStr.startsWith("http://") || urlStr.startsWith("https://"))
-      ) {
+      // When streamProxyEnabled is ON: proxy is used for external streams
+      // When streamProxyEnabled is OFF: direct is used (except for custom headers or HTTP on HTTPS)
+      const shouldUseProxy = streamProxyEnabled ? true : (hasHeaders || (isHttpsPage && isHttpStream));
+
+      if (shouldUseProxy && (urlStr.startsWith("http://") || urlStr.startsWith("https://"))) {
         const proxyPath = "/api/proxy";
-        if (urlStr.includes("/api/proxy")) return getAbsoluteUrl(urlStr);
+        if (urlStr.includes("/api/proxy") || urlStr.includes("/api/proxy-stream")) return getAbsoluteUrl(urlStr);
         if (hasHeaders) {
           const parts = urlStr.split("|");
           const url = parts[0];
@@ -897,11 +694,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
         return getAbsoluteUrl(`${proxyPath}?url=${encodeURIComponent(urlStr)}`);
       }
-      // Return clean direct URL without headers suffix
       return urlStr.split("|")[0];
     };
 
+    // Auto-stream playback URL
     let currentEffectiveUrl = getEffectiveUrl(channel.streamUrl, forceDirect);
+    const isUsingProxyInitial = currentEffectiveUrl.includes("/api/proxy");
 
     const playVideo = () => {
       if (!video || isCancelled) return;
@@ -916,6 +714,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               if (!isCancelled) {
                 setIsPlaying(true);
                 setIsBuffering(false);
+                // On success, reset our fallback flags
+                setProxyAttempted(false);
+                setDirectAttempted(false);
               }
             })
             .catch((err) => {
@@ -971,7 +772,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const isXtreamLiveTs = (rawUrl.includes("/live/") || rawUrl.includes("/get.php")) && !isHlsStream && !isDirectMediaStream;
     const isRawTsStream = (rawUrl.match(/\.(ts)(\?.*)?$/i) || rawUrl.includes(".ts") || rawUrl.includes("/ts/") || isXtreamLiveTs) && !isHlsStream && !isDirectMediaStream;
 
-    // If Safari / iOS supports native HLS, use it directly for instant playback
     const canPlayNativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
     
     function initHlsJs() {
@@ -985,60 +785,77 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         playerRef.current = null;
       }
 
-      const isMobileDevice = typeof navigator !== "undefined" && /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
-
-      // Robustly get Hls constructor, Events, and ErrorTypes (Vite/CJS compatibility)
       const HlsConstructor: any = getHlsConstructor();
       const HlsEvents: any = HlsConstructor?.Events || (Hls as any)?.Events || (Hls as any)?.default?.Events || {};
       const HlsErrorTypes: any = HlsConstructor?.ErrorTypes || (Hls as any)?.ErrorTypes || (Hls as any)?.default?.ErrorTypes || {};
 
       if (!HlsConstructor || typeof HlsConstructor !== 'function') {
-        console.error("Hls is not a constructor:", Hls);
         initNativeVideo();
         return;
       }
 
       const hls = new HlsConstructor({
         enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 1,
-        maxBufferLength: 3,
-        maxMaxBufferLength: 6,
-        maxBufferSize: 4 * 1024 * 1024,
+        lowLatencyMode: false,
+        backBufferLength: 10,
+        maxBufferLength: 10,
+        maxMaxBufferLength: 20,
+        maxBufferSize: 15 * 1024 * 1024,
         startLevel: -1,
-        startFragPrefetch: true,
         capLevelToPlayerSize: true,
-        abrEwmaDefaultEstimate: 10000000,
-        maxBufferHole: 0.2,
-        highBufferWatchdogPeriod: 0.5,
+        abrEwmaDefaultEstimate: 5000000,
+        maxBufferHole: 0.5,
         nudgeOffset: 0.1,
-        nudgeMaxRetry: 3,
-        fragLoadingTimeOut: 5000,
-        manifestLoadingTimeOut: 5000,
-        levelLoadingTimeOut: 5000,
+        nudgeMaxRetry: 5,
+        fragLoadingTimeOut: 6000,
+        manifestLoadingTimeOut: 6000,
+        levelLoadingTimeOut: 6000,
         fragLoadingMaxRetry: 3,
         manifestLoadingMaxRetry: 3,
         levelLoadingMaxRetry: 3,
-        fragLoadingRetryDelay: 200,
-        manifestLoadingRetryDelay: 200,
-        liveSyncDurationCount: 1,
-        liveMaxLatencyDurationCount: 2,
+        fragLoadingRetryDelay: 400,
+        manifestLoadingRetryDelay: 400,
+        liveSyncDurationCount: 1, // Start instantly on 1st segment (under 1-2s)
+        liveMaxLatencyDurationCount: 4,
+        liveDurationInfinity: true,
+        startFragPrefetch: true,
+        testBandwidth: false,
+        fpsDroppedMonitoringPeriod: 0,
+        highBufferWatchdogPeriod: 2,
         stretchShortVideoTrack: true,
       });
 
       hls.attachMedia(video);
       hls.loadSource(currentEffectiveUrl);
 
-      hls.on(HlsEvents.MEDIA_ATTACHED || Hls?.Events?.MEDIA_ATTACHED || "hlsMediaAttached", () => {
+      hls.on(HlsEvents.MEDIA_ATTACHED || "hlsMediaAttached", () => {
         if (isCancelled) return;
         if (autoPlay) playVideo();
       });
 
-      hls.on(HlsEvents.MANIFEST_PARSED || Hls?.Events?.MANIFEST_PARSED || "hlsManifestParsed", () => {
+      hls.on(HlsEvents.BUFFER_APPENDED || "hlsBufferAppended", () => {
         if (isCancelled) return;
         setIsBuffering(false);
         setShowBufferSpinner(false);
-        setRetryCount(0); // Reset on success
+        if (autoPlay && video.paused && !isUserPausedRef.current) {
+          playVideo();
+        }
+      });
+
+      hls.on(HlsEvents.FRAG_BUFFERED || "hlsFragBuffered", () => {
+        if (isCancelled) return;
+        setIsBuffering(false);
+        setShowBufferSpinner(false);
+        if (autoPlay && video.paused && !isUserPausedRef.current) {
+          playVideo();
+        }
+      });
+
+      hls.on(HlsEvents.MANIFEST_PARSED || "hlsManifestParsed", () => {
+        if (isCancelled) return;
+        setIsBuffering(false);
+        setShowBufferSpinner(false);
+        setRetryCount(0);
         if (autoPlay) playVideo();
 
         if (hls) {
@@ -1056,46 +873,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       });
 
-      hls.on(HlsEvents.LEVEL_LOADED || Hls?.Events?.LEVEL_LOADED || "hlsLevelLoaded", () => {
-        if (isCancelled) return;
-        setIsBuffering(false);
-        setShowBufferSpinner(false);
-        if (autoPlay) playVideo();
-      });
-
-      hls.on(HlsEvents.FRAG_PARSING_INIT_SEGMENT || Hls?.Events?.FRAG_PARSING_INIT_SEGMENT || "hlsFragParsingInitSegment", () => {
-        if (isCancelled) return;
-        setIsBuffering(false);
-        setRetryCount(0);
-        if (autoPlay) playVideo();
-      });
-
-      let bufferAppendErrorCount = 0;
-      let recoveryCount = 0;
-
-      hls.on(HlsEvents.FRAG_BUFFERED || Hls?.Events?.FRAG_BUFFERED || "hlsFragBuffered", () => {
-        if (isCancelled) return;
-        setIsBuffering(false);
-        setRetryCount(0);
-        bufferAppendErrorCount = 0;
-        recoveryCount = 0;
-        if (autoPlay && video.paused && !isUserPausedRef.current) {
-          playVideo();
-        }
-      });
-
-      hls.on(HlsEvents.ERROR || Hls?.Events?.ERROR || "hlsError", (_event, data) => {
+      hls.on(HlsEvents.ERROR || "hlsError", (_event, data) => {
         if (isCancelled) return;
         
-        console.warn("[HLS Event/Error]:", {
-          type: data.type,
-          details: data.details,
-          fatal: data.fatal,
-          error: data.error
-        });
+        const detailStr = String(data.details || "");
+        console.warn("[HLS Event/Error]:", data.type, detailStr, "Fatal:", data.fatal);
 
         // Handle non-HLS streams (e.g. raw TS, FLV, MP4) parsed by Hls.js
-        const detailStr = String(data.details || "");
         if (detailStr === "manifestParsingError" || detailStr === "manifestIncompatibleCodecsError") {
           console.warn("HLS manifest parsing failed (non-M3U8 stream). Fallback to MPEG-TS / native player...");
           hls?.destroy();
@@ -1122,112 +906,56 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     break;
                   }
                 }
-                if (!jumped) {
-                  video.currentTime += 0.3;
-                }
+                if (!jumped) video.currentTime += 0.3;
               } else {
                 video.currentTime += 0.3;
               }
             }
             hls?.startLoad();
-            if (video && video.paused && !isUserPausedRef.current) {
-              playVideo();
-            }
+            if (video && video.paused && !isUserPausedRef.current) playVideo();
           } catch (e) {}
           return;
         }
 
-        // Handle SourceBuffer / bufferAppendError or unsupported codec errors
-        if (detailStr === "bufferAppendError" || detailStr === "bufferAppendingError" || (data.error?.message && data.error.message.includes("codecs=ac-3"))) {
-          bufferAppendErrorCount++;
-          console.warn(`[HLS Guard] SourceBuffer append error encountered (count: ${bufferAppendErrorCount}).`);
-          
-          if (bufferAppendErrorCount === 1) {
-            try {
-              hls?.swapAudioCodec();
-              hls?.recoverMediaError();
-            } catch (e) {
-              console.warn("Failed swapAudioCodec/recoverMediaError:", e);
-            }
-            return;
-          } else if (bufferAppendErrorCount === 2) {
-            try {
-              hls?.recoverMediaError();
-            } catch (e) {
-              console.warn("Failed recoverMediaError:", e);
-            }
-            return;
-          } else {
-            console.warn("[HLS Guard] Persistent SourceBuffer append error. Falling back to video-only mpegts mode...");
-            hls?.destroy();
-            if (playerRef.current === hls) playerRef.current = null;
-            initMpegTs(true);
-            return;
-          }
-        }
-
-        const is429 = data.response && (data.response.code === 429 || String(data.response.text || "").includes("Rate exceeded"));
-        const is404 = data.response && data.response.code === 404;
-        const is403 = data.response && data.response.code === 403;
-        const isFetchError = data.response && data.response.code === 0; // Hls.js uses 0 for fetch errors often
-
         if (data.fatal) {
-          console.warn("HLS fatal error:", data.type, data.details, "Code:", data.response?.code);
-
           switch (data.type) {
-            case HlsErrorTypes.NETWORK_ERROR || Hls?.ErrorTypes?.NETWORK_ERROR || "networkError":
-              setIsBuffering(true);
-              setShowBufferSpinner(true);
-              if (is429) {
-                 console.warn("Rate limit exceeded on proxy. Falling back to direct streaming!");
-                 hls?.destroy();
-                 if (playerRef.current === hls) playerRef.current = null;
-                 setForceDirect(true);
-                 setTimeout(() => {
-                   if (!isCancelled && !isPlaying) {
-                      initHlsJs();
-                   }
-                 }, 500);
-              } else if (is404 || is403 || isFetchError) {
-                 hls?.destroy();
-                 if (playerRef.current === hls) playerRef.current = null;
-                 if (retryCount < MAX_RETRIES) {
-                   setRetryCount(prev => prev + 1);
-                   setTimeout(() => {
-                     if (!isCancelled && !isPlaying) {
-                        initHlsJs();
-                     }
-                   }, 3000);
-                 }
+            case HlsErrorTypes.NETWORK_ERROR || "networkError":
+              const is429 = data.response && (data.response.code === 429 || String(data.response.text || "").includes("Rate exceeded"));
+              const is404 = data.response && data.response.code === 404;
+              const is403 = data.response && data.response.code === 403;
+              const isFetchError = data.response && data.response.code === 0;
+
+              // If network fails and we haven't tried the fallback yet, switch proxy/direct
+              if (isUsingProxyInitial && !directAttempted) {
+                console.warn("[Smart Proxy] Proxied load failed, falling back to DIRECT...");
+                setDirectAttempted(true);
+                setForceDirect(true);
+                return;
+              } else if (!isUsingProxyInitial && !proxyAttempted && (is403 || is404 || isFetchError || is429)) {
+                console.warn("[Smart Proxy] Direct load failed, falling back to PROXY...");
+                setProxyAttempted(true);
+                setForceDirect(false);
+                return;
+              }
+
+              // Otherwise standard retry with backoff
+              if (retryCount < MAX_RETRIES) {
+                setRetryCount(prev => prev + 1);
+                const backoff = 2000 + (retryCount * 1000);
+                setTimeout(() => {
+                  if (!isCancelled) hls?.startLoad();
+                }, backoff);
               } else {
-                 hls?.startLoad();
+                setErrorMsg("Streaming error. Try another channel.");
+                setIsBuffering(false);
               }
               break;
-            case HlsErrorTypes.MEDIA_ERROR || Hls?.ErrorTypes?.MEDIA_ERROR || "mediaError":
-              console.warn("[HLS] Recovering media error...");
+            case HlsErrorTypes.MEDIA_ERROR || "mediaError":
               hls?.recoverMediaError();
-              setTimeout(() => {
-                if (!isCancelled && !isUserPausedRef.current) {
-                  playVideo();
-                }
-              }, 300);
               break;
             default:
-              setIsBuffering(true);
-              setShowBufferSpinner(true);
-              
-              if (retryCount < MAX_RETRIES) {
-                hls?.destroy();
-                if (playerRef.current === hls) playerRef.current = null;
-                setRetryCount(prev => prev + 1);
-                setTimeout(() => {
-                  if (!isCancelled && !isPlaying) {
-                     initHlsJs();
-                  }
-                }, 3000);
-              } else {
-                hls?.destroy();
-              }
+              hls?.destroy();
+              setErrorMsg("Playback failed.");
               break;
           }
         }
@@ -1255,19 +983,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
 
     function initMpegTs(videoOnly = false) {
-      const urlLower = (channel?.streamUrl || "").toLowerCase();
-      const isMpegTsOrFlv = urlLower.includes(".ts") || urlLower.includes("/ts/") || urlLower.includes(".flv") || urlLower.includes("mpegts") || urlLower.includes("mpeg-ts") || urlLower.includes("flv") || urlLower.includes("/live/") || isRawTsStream;
-      if (!isMpegTsOrFlv) {
-        console.warn("[mpegts Guard] Attempted to load non-MPEG-TS/FLV stream in mpegts.js. Falling back to native player...");
-        initNativeVideo();
-        return;
-      }
-
       const mpegtsObj: any = getMpegtsObj();
       const mpegtsEvents: any = mpegtsObj?.Events || (mpegts as any)?.Events || (mpegts as any)?.default?.Events || {};
 
       if (!mpegtsObj || typeof mpegtsObj.createPlayer !== 'function') {
-        console.error("mpegts is not valid:", mpegts);
         initNativeVideo();
         return;
       }
@@ -1286,7 +1005,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         hasAudio: !videoOnly,
         hasVideo: true,
       }, {
-        enableStashBuffer: true,
+        enableStashBuffer: false,
         stashInitialSize: 32 * 1024,
         liveBufferLatencyChasing: true,
         liveBufferLatencyMaxLatency: 2.0,
@@ -1450,7 +1169,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       }
     };
-  }, [channel, isPremiumLocked, autoPlay, autoReconnect, streamProxyEnabled, retryTrigger, forceDirect]);
+  }, [channel, isPremiumLocked, autoPlay, autoReconnect, retryTrigger, forceDirect]);
 
   // Continuous auto-resume & freeze-recovery watchdog for live channel playback
   useEffect(() => {
@@ -1459,22 +1178,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const interval = setInterval(() => {
       const video = videoRef.current;
-      if (!video || !channel || isPremiumLocked || errorMsg) return;
+      if (!video || !channel || isPremiumLocked || errorMsg || isBuffering) return;
 
       if (!isUserPausedRef.current && video.paused) {
-        console.log("[Auto-Resume Watchdog] Video paused unexpectedly, auto-resuming playback...");
         if (playVideoRef.current) {
           playVideoRef.current();
         }
         return;
       }
 
-      // Detect stream freeze on same frame during active live playback
+      // Detect real stream freeze on same frame during active live playback
       if (!isUserPausedRef.current && !video.paused) {
         if (video.currentTime === lastTime && video.currentTime > 0) {
           freezeCount++;
-          if (freezeCount >= 2) {
-            console.warn("[Freeze Watchdog] Stream frozen on frame at currentTime:", video.currentTime, "- Recovering live playback...");
+          if (freezeCount >= 3) {
             freezeCount = 0;
             if (playerRef.current && typeof playerRef.current.startLoad === "function") {
               try { playerRef.current.startLoad(); } catch (e) {}
@@ -1492,9 +1209,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           freezeCount = 0;
         }
       }
-    }, 1200);
+    }, 3500);
     return () => clearInterval(interval);
-  }, [channel, isPremiumLocked, errorMsg]);
+  }, [channel, isPremiumLocked, errorMsg, isBuffering]);
 
   // Unified buffering & progress handlers
   useEffect(() => {
@@ -1777,8 +1494,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Buffering Spinner Overlay - Sophisticated Look */}
-      {showBufferSpinner && !isPremiumLocked && (
+      {/* Buffering Spinner Overlay - Completely Disabled per User Request */}
+      {false && showBufferSpinner && !isPremiumLocked && (
         <div className="absolute inset-0 bg-black/40 backdrop-blur-[4px] flex flex-col items-center justify-center z-20 gap-4">
           <div className="relative w-16 h-16">
             <div className="absolute inset-0 border-4 border-blue-500/20 rounded-full" />
@@ -1847,7 +1564,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       {/* TRANSPARENT OSD CONTROLS */}
       {!isPremiumLocked && showControls && (
-        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-transparent to-black/80 z-20 flex flex-col justify-between p-3 sm:p-6 transition-opacity duration-300">
+        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-transparent to-black/80 z-20 flex flex-col justify-between p-3 sm:p-6 pt-safe pb-safe transition-opacity duration-300">
           {/* Top Channel Header Bar */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 sm:gap-4 min-w-0">
@@ -1957,51 +1674,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
 
             {/* Transport Action Bar */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 sm:gap-3">
+            <div className="flex items-center justify-between gap-1">
+              <div className="flex items-center gap-1 sm:gap-2.5">
                 <button
                   onClick={onPrevChannel}
-                  className="p-2 sm:p-3 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all active:scale-95"
+                  className="p-1.5 sm:p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-lg sm:rounded-xl border border-white/10 transition-all active:scale-95 shrink-0"
                   title="Previous Channel"
                 >
-                  <SkipBack className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <SkipBack className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                 </button>
 
                 <button
                   onClick={togglePlay}
-                  className="p-2.5 sm:p-3.5 bg-white hover:bg-gray-200 text-black font-bold rounded-xl shadow-lg transition-all active:scale-95"
+                  className="p-2 sm:p-3 bg-white hover:bg-gray-200 text-black font-bold rounded-lg sm:rounded-xl shadow-lg transition-all active:scale-95 shrink-0"
                   title={isPlaying ? "Pause" : "Play"}
                 >
                   {isPlaying ? (
-                    <Pause className="w-5 h-5 sm:w-6 sm:h-6 fill-black" />
+                    <Pause className="w-4 h-4 sm:w-5 sm:h-5 fill-black" />
                   ) : (
-                    <Play className="w-5 h-5 sm:w-6 sm:h-6 fill-black" />
+                    <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-black" />
                   )}
                 </button>
 
                 <button
                   onClick={onNextChannel}
-                  className="p-2 sm:p-3 bg-white/10 hover:bg-white/20 text-white rounded-xl border border-white/10 transition-all active:scale-95"
+                  className="p-1.5 sm:p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-lg sm:rounded-xl border border-white/10 transition-all active:scale-95 shrink-0"
                   title="Next Channel"
                 >
-                  <SkipForward className="w-4 h-4 sm:w-5 sm:h-5" />
+                  <SkipForward className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                 </button>
 
                 <button
                   onClick={toggleMute}
-                  className="p-2 sm:p-3 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-xl border border-white/10 transition-colors"
+                  className="p-1.5 sm:p-2.5 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-lg sm:rounded-xl border border-white/10 transition-colors shrink-0"
                   title={isMuted ? "Unmute" : "Mute"}
                 >
                   {isMuted || volume === 0 ? (
-                    <VolumeX className="w-4 h-4 sm:w-5 sm:h-5 text-red-400" />
+                    <VolumeX className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-red-400" />
                   ) : (
-                    <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
+                    <Volume2 className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                   )}
                 </button>
               </div>
 
-              <div className="flex items-center gap-2 sm:gap-3">
-                <span className="hidden md:flex text-[10px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg uppercase tracking-wider items-center gap-1">
+              <div className="flex items-center gap-1 sm:gap-2.5">
+                <span className="hidden md:flex text-[10px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg uppercase tracking-wider items-center gap-1 shrink-0">
                   <CheckCircle className="w-3 h-3" /> Auto Reconnect ON
                 </span>
 
@@ -2011,33 +1728,33 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     else if (objectFit === "cover") setObjectFit("contain");
                     else setObjectFit("fill");
                   }}
-                  className="px-3 py-3 bg-white/10 hover:bg-white/20 text-xs font-bold text-gray-200 hover:text-white rounded-xl border border-white/10 transition-colors flex items-center gap-1.5 cursor-pointer"
-                  title="Toggle Video Aspect Fit (Removes Black Borders)"
+                  className="p-1.5 sm:px-3 sm:py-2.5 bg-white/10 hover:bg-white/20 text-[10px] font-bold text-gray-200 hover:text-white rounded-lg sm:rounded-xl border border-white/10 transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                  title="Toggle Video Aspect Fit"
                 >
-                  <Maximize2 className="w-4 h-4 text-amber-400" />
-                  <span className="hidden xs:inline uppercase text-[10px]">
+                  <Maximize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
+                  <span className="hidden sm:inline uppercase">
                     {objectFit === "fill" ? "Fit: Fill" : objectFit === "cover" ? "Fit: Cover" : "Fit: Contain"}
                   </span>
                 </button>
 
                 <button
                   onClick={() => setShowQualityMenu(!showQualityMenu)}
-                  className="p-3 sm:p-3.5 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-xl border border-white/10 transition-colors cursor-pointer"
+                  className="p-1.5 sm:p-2.5 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-lg sm:rounded-xl border border-white/10 transition-colors cursor-pointer shrink-0"
                   title="Quality Settings"
                 >
-                  <Sliders className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <Sliders className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                 </button>
 
                 {showQualityMenu && (
-                  <div className="absolute bottom-16 right-5 bg-slate-900 border border-slate-700 rounded-lg p-2 z-50 text-white text-xs min-w-[100px]">
+                  <div className="absolute bottom-14 right-2 sm:right-5 bg-slate-900 border border-slate-700 rounded-xl p-2 z-50 text-white text-xs min-w-[110px] shadow-2xl">
                     {levels.map((level) => (
                       <button
                         key={level.id}
                         onClick={() => handleQualityChange(level.id)}
-                        className={`block w-full text-left px-4 py-2 ${
+                        className={`block w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-bold ${
                           selectedLevel === level.id
-                            ? "bg-blue-600"
-                            : "hover:bg-slate-800"
+                            ? "bg-blue-600 text-white"
+                            : "hover:bg-slate-800 text-slate-300"
                         }`}
                       >
                         {level.name}
@@ -2048,13 +1765,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
                 <button
                   onClick={toggleFullscreen}
-                  className="p-3 sm:p-3.5 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-xl border border-white/10 transition-colors cursor-pointer"
-                  title={isFullscreen ? "Exit Fullscreen" : "Fullscreen (Auto-Rotate)"}
+                  className="p-1.5 sm:p-2.5 bg-white/10 hover:bg-white/20 text-gray-300 hover:text-white rounded-lg sm:rounded-xl border border-white/10 transition-colors cursor-pointer shrink-0"
+                  title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
                 >
                   {isFullscreen ? (
-                    <Minimize className="w-5 h-5 sm:w-6 sm:h-6" />
+                    <Minimize className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                   ) : (
-                    <Maximize className="w-5 h-5 sm:w-6 sm:h-6" />
+                    <Maximize className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                   )}
                 </button>
               </div>

@@ -41,3 +41,25 @@
 .animate-spin-slow {
   animation: spin-slow 3s linear infinite;
 }
+
+/* Safe Area Utilities for Mobile Notches */
+.pt-safe {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+.pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+.mt-safe {
+  margin-top: env(safe-area-inset-top);
+}
+.mb-safe {
+  margin-bottom: env(safe-area-inset-bottom);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -438,7 +438,11 @@ export default function App() {
   };
 
   // Channel Number Direct Jump Buffer Logic
-  // Keyboard Event Listener for Android TV Remote Keys
+  // TV remote numeric channel entry buffer
+  const numberBufferRef = useRef<string>("");
+  const numberTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Keyboard Event Listener for Android TV / Smart TV Remote Keys & Keyboard Direct Navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore typing inside text inputs
@@ -446,61 +450,60 @@ export default function App() {
         return;
       }
 
+      // 1. Direct channel number entry (0-9 keys)
+      if (e.key >= "0" && e.key <= "9") {
+        e.preventDefault();
+        if (numberTimeoutRef.current) clearTimeout(numberTimeoutRef.current);
+        numberBufferRef.current += e.key;
+
+        const currentInput = numberBufferRef.current;
+        numberTimeoutRef.current = setTimeout(() => {
+          const targetNum = parseInt(currentInput, 10);
+          numberBufferRef.current = "";
+          if (!isNaN(targetNum)) {
+            const matched = channels.find((c) => c.channelNumber === targetNum && c.isActive);
+            if (matched) {
+              handleSelectChannel(matched);
+            }
+          }
+        }, 1200); // Wait 1.2s for multi-digit entry (e.g. "12")
+        return;
+      }
+
+      // 2. Navigation Keys (Arrow keys, Page/Channel Up/Down)
       switch (e.key) {
         case "ArrowUp":
+        case "PageUp":
+        case "ChannelUp":
           e.preventDefault();
-          if (isGridFocused) {
-            setGridFocusedIdx((prev) => Math.max(0, prev - 4));
-          } else if (isSidebarFocused) {
-            setSidebarFocusedIdx((prev) => Math.max(0, prev - 1));
-          }
+          handlePrevChannel();
           break;
 
         case "ArrowDown":
+        case "PageDown":
+        case "ChannelDown":
           e.preventDefault();
-          if (isGridFocused) {
-            setGridFocusedIdx((prev) =>
-              Math.min(filteredChannels.length - 1, prev + 4),
-            );
-          } else if (isSidebarFocused) {
-            setSidebarFocusedIdx((prev) => Math.min(20, prev + 1));
-          }
+          handleNextChannel();
           break;
 
         case "ArrowLeft":
+          // Quick Category navigation (Previous category)
           e.preventDefault();
-          if (isGridFocused && gridFocusedIdx % 4 === 0) {
-            setIsGridFocused(false);
-            setIsSidebarFocused(true);
-          } else if (isGridFocused) {
-            setGridFocusedIdx((prev) => Math.max(0, prev - 1));
+          if (categories.length > 0) {
+            const currentIdx = categories.indexOf(selectedCategory);
+            const prevIdx = currentIdx <= 0 ? categories.length - 1 : currentIdx - 1;
+            handleSelectCategory(categories[prevIdx]);
           }
           break;
 
         case "ArrowRight":
+          // Quick Category navigation (Next category)
           e.preventDefault();
-          if (isSidebarFocused) {
-            setIsSidebarFocused(false);
-            setIsGridFocused(true);
-          } else if (isGridFocused) {
-            setGridFocusedIdx((prev) =>
-              Math.min(filteredChannels.length - 1, prev + 1),
-            );
+          if (categories.length > 0) {
+            const currentIdx = categories.indexOf(selectedCategory);
+            const nextIdx = (currentIdx === -1 || currentIdx === categories.length - 1) ? 0 : currentIdx + 1;
+            handleSelectCategory(categories[nextIdx]);
           }
-          break;
-
-        case "Enter":
-          e.preventDefault();
-          if (isGridFocused && filteredChannels[gridFocusedIdx]) {
-            setActiveChannel(filteredChannels[gridFocusedIdx]);
-          }
-          break;
-
-        case "Backspace":
-        case "Escape":
-          e.preventDefault();
-          setIsSidebarFocused(true);
-          setIsGridFocused(false);
           break;
 
         default:
@@ -509,13 +512,16 @@ export default function App() {
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (numberTimeoutRef.current) clearTimeout(numberTimeoutRef.current);
+    };
   }, [
-    isGridFocused,
-    isSidebarFocused,
-    gridFocusedIdx,
-    sidebarFocusedIdx,
     channels,
+    categories,
+    selectedCategory,
+    handlePrevChannel,
+    handleNextChannel,
   ]);
 
   const activeTheme = THEMES[currentTheme] || THEMES.gold;
@@ -575,37 +581,34 @@ export default function App() {
 
       {/* Admin Panel Modal Overlay */}
       {isAdminOpen && (
-        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto p-4 sm:p-6 flex flex-col animate-in fade-in-50 duration-200">
-          <div className="max-w-7xl w-full mx-auto flex-1 flex flex-col">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-6 shrink-0">
+        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto pt-safe sm:p-6 flex flex-col animate-in fade-in-50 duration-200">
+          <div className="max-w-7xl w-full mx-auto flex-1 flex flex-col px-4 sm:px-0">
+            <div className="sticky top-0 z-50 flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 mb-6 shrink-0 gap-4 bg-slate-950 pt-2">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400">
                   <AlertCircle className="w-6 h-6 text-amber-500" />
                 </div>
                 <div>
                   <h2 className="text-xl font-black text-white uppercase tracking-tight">
-                    Admin Control Panel
+                    Admin Control
                   </h2>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
-                    Manage playlists, streams, categories, and users
-                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleLogout}
-                  className="px-4 py-2 bg-rose-500/15 hover:bg-rose-500 border border-rose-500/30 hover:border-rose-400 text-rose-400 hover:text-slate-950 text-xs font-black rounded-xl transition-all shadow-md uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+                  className="px-4 py-3 bg-rose-500/15 hover:bg-rose-500 border border-rose-500/30 hover:border-rose-400 text-rose-400 hover:text-slate-950 text-[10px] font-black rounded-2xl transition-all shadow-md uppercase tracking-wider flex items-center gap-1.5 shrink-0"
                 >
-                  Logout Account ✕
+                  Logout ✕
                 </button>
                 <button
                   onClick={() => {
                     setIsAdminOpen(false);
                     loadInitialData(); // Reload updated playlist data
                   }}
-                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-xs font-black text-white rounded-xl transition-all shadow-md uppercase tracking-wider shrink-0"
+                  className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-black text-sm font-black rounded-2xl transition-all shadow-lg shadow-amber-500/20 uppercase tracking-wider shrink-0"
                 >
-                  Close Panel ✕
+                  Close ✕
                 </button>
               </div>
             </div>
@@ -650,8 +653,8 @@ export default function App() {
 
       {/* Settings Modal Overlay */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto p-4 sm:p-6 flex items-center justify-center animate-in fade-in-50 duration-200">
-          <div className="max-w-4xl w-full mx-auto">
+        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto sm:p-6 flex flex-col items-center sm:justify-center animate-in fade-in-50 duration-200">
+          <div className="max-w-4xl w-full mx-auto min-h-full sm:min-h-0 flex flex-col">
             <SettingsView onClose={() => setIsSettingsOpen(false)} />
           </div>
         </div>

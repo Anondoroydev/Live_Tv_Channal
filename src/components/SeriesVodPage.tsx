@@ -159,7 +159,7 @@ export const SeriesVodPage: React.FC<SeriesVodPageProps> = ({
   return (
     <div className="min-h-screen w-full bg-slate-950 text-white flex flex-col overflow-y-auto selection:bg-amber-500 selection:text-slate-950">
       {/* 🚀 VOD TOP NAVIGATION HEADER */}
-      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-xl border-b border-slate-800/80 px-4 sm:px-8 py-3 flex items-center justify-between gap-4 shadow-2xl">
+      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-xl border-b border-slate-800/80 px-4 sm:px-8 py-3 pt-safe flex items-center justify-between gap-4 shadow-2xl">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
             onClick={onBackToLiveTv}
@@ -443,7 +443,7 @@ export const SeriesVodPage: React.FC<SeriesVodPageProps> = ({
 
       {/* 🎥 EPISODE SELECTION & PLAYBACK MODAL */}
       {selectedSeries && (
-        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto p-4 sm:p-6 flex flex-col animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 overflow-y-auto p-4 sm:p-6 pt-safe pb-safe flex flex-col animate-in fade-in duration-200">
           <div className="max-w-5xl w-full mx-auto flex-1 flex flex-col">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4 shrink-0">

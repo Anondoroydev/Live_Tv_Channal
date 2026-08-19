@@ -164,12 +164,12 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
                   Current Active Plan
                 </p>
                 <div className="flex items-center gap-2">
-                  <p className="text-sm font-black text-cyan-400">
+                  <p className={`text-sm font-black ${currentUser.paymentStatus === 'Rejected' ? 'text-rose-400' : 'text-cyan-400'}`}>
                     {currentUser.subscriptionPlan}
                   </p>
                   {currentUser.subscriptionPlan !== "Free" && currentUser.isApprovedByAdmin === false && (
-                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 border border-amber-500/30">
-                      <Clock size={10} /> Pending Admin Approval
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 border ${currentUser.paymentStatus === 'Rejected' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' : 'bg-amber-500/20 text-amber-400 border-amber-500/30'}`}>
+                      <Clock size={10} /> {currentUser.paymentStatus === 'Rejected' ? 'Payment Rejected' : 'Pending Admin Approval'}
                     </span>
                   )}
                 </div>
