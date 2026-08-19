@@ -6,7 +6,21 @@ import {
   SettingsConfig,
 } from "../types";
 import { INITIAL_CHANNELS } from "../data/initialChannels";
-import { parseM3UClient, saveChannelsDirect } from "../utils/m3uClientParser";
+import {
+  parseM3UClient,
+  saveChannelsDirect,
+  getStoredChannelsDirect,
+  deleteChannelDirect,
+  clearAllChannelsDirect,
+  restoreDefaultChannelsDirect,
+} from "../utils/m3uClientParser";
+import {
+  getStoredPaymentsDirect,
+  savePaymentRecordDirect,
+  approvePaymentDirect,
+  rejectPaymentDirect,
+  deletePaymentDirect,
+} from "../utils/paymentStorage";
 
 const TOKEN_KEY = "myiptv_jwt_token";
 let channelsCache: Channel[] | null = null;
@@ -77,14 +91,7 @@ export const getApiUrl = (path: string): string => {
 };
 
 const getStoredChannelsFallback = (): Channel[] => {
-  try {
-    const local = localStorage.getItem("myiptv_custom_channels");
-    if (local) {
-      const parsed = JSON.parse(local);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch (e) {}
-  return INITIAL_CHANNELS as Channel[];
+  return getStoredChannelsDirect();
 };
 
 export const apiService = {
@@ -305,20 +312,72 @@ export const apiService = {
     paymentMethod?: string,
     amount?: string,
   ): Promise<User> {
-    const res = await fetch(getApiUrl("/api/auth/subscription"), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({
-        plan,
-        transactionId,
-        senderNumber,
-        paymentMethod,
-        amount,
-      }),
-    });
-    const data = await handleResponse<{ user: User }>(res);
     channelsCache = null;
-    return data.user;
+    try {
+      const res = await fetch(getApiUrl("/api/auth/subscription"), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({
+          plan,
+          transactionId,
+          senderNumber,
+          paymentMethod,
+          amount,
+        }),
+      });
+      if (res.ok) {
+        const data = await handleResponse<{ user: User }>(res);
+        if (data.user) {
+          try {
+            localStorage.setItem("myiptv_user_data", JSON.stringify(data.user));
+          } catch (e) {}
+          return data.user;
+        }
+      }
+    } catch (err) {
+      console.warn("Server subscription update failed, saving locally:", err);
+    }
+
+    // Direct Browser & Firestore Persistence Fallback
+    const currentUser = await this.getCurrentUser();
+    const userId = currentUser?.id || `user_${Date.now()}`;
+    const userName = currentUser?.email || currentUser?.username || "Subscriber";
+
+    const paymentRecord = {
+      id: `trx_${transactionId || Date.now()}`,
+      userId: userId,
+      userName: userName,
+      amount: amount || (plan.includes("100") ? "৳100" : plan.includes("45") ? "৳45" : "৳10"),
+      plan: plan,
+      transactionId: transactionId || `TRX${Date.now()}`,
+      senderNumber: senderNumber || "01700000000",
+      paymentMethod: paymentMethod || "bKash",
+      status: "Pending" as const,
+      createdAt: new Date().toISOString(),
+    };
+
+    await savePaymentRecordDirect(paymentRecord);
+
+    const updatedUser: User = {
+      ...(currentUser || {
+        id: userId,
+        username: userName,
+        email: userName,
+        role: "user",
+        favorites: [],
+        recentlyWatched: [],
+      }),
+      subscriptionPlan: plan,
+      isApprovedByAdmin: false,
+      subscriptionStatus: "pending",
+      paymentStatus: "Pending",
+    };
+
+    try {
+      localStorage.setItem("myiptv_user_data", JSON.stringify(updatedUser));
+    } catch (e) {}
+
+    return updatedUser;
   },
 
   // Channels API
@@ -715,13 +774,10 @@ export const apiService = {
       });
       if (res.ok) {
         await handleResponse(res);
-        return;
       }
     } catch (e) {}
 
-    const channels = getStoredChannelsFallback();
-    const updated = channels.filter((c) => c.id !== id);
-    await saveChannelsDirect(updated);
+    await deleteChannelDirect(id);
   },
 
   async adminClearChannels(): Promise<{ message: string }> {
@@ -737,7 +793,7 @@ export const apiService = {
       }
     } catch (e) {}
 
-    await saveChannelsDirect([], "cleared");
+    await clearAllChannelsDirect();
     return { message: "All channels cleared successfully!" };
   },
 
@@ -754,11 +810,11 @@ export const apiService = {
       }
     } catch (e) {}
 
-    await saveChannelsDirect(INITIAL_CHANNELS as Channel[], "default");
+    const channels = await restoreDefaultChannelsDirect();
     return {
       message: "Reset channels to default successfully!",
-      totalChannels: INITIAL_CHANNELS.length,
-      channels: INITIAL_CHANNELS as Channel[],
+      totalChannels: channels.length,
+      channels: channels,
     };
   },
 
@@ -847,10 +903,11 @@ export const apiService = {
     try {
       const res = await fetch(getApiUrl("/api/admin/payments"), { headers: getHeaders() });
       if (res.ok) {
-        return await res.json();
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) return data;
       }
     } catch (e) {}
-    return [];
+    return getStoredPaymentsDirect();
   },
 
   async adminAddSamplePayments(): Promise<any[]> {
@@ -864,37 +921,58 @@ export const apiService = {
         return data.payments || [];
       }
     } catch (e) {}
-    return [];
+    return getStoredPaymentsDirect();
   },
 
   async adminApprovePayment(paymentId: string, userId?: string, plan?: string): Promise<{ message: string }> {
-    const idToUse = paymentId || userId || "default";
-    const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/approve`), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ userId, plan })
-    });
-    return handleResponse(res);
+    try {
+      const idToUse = paymentId || userId || "default";
+      const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/approve`), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ userId, plan })
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    await approvePaymentDirect(paymentId, userId, plan);
+    return { message: "Payment approved successfully!" };
   },
 
   async adminRejectPayment(paymentId: string, userId?: string): Promise<{ message: string }> {
-    const idToUse = paymentId || userId || "default";
-    const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/reject`), {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify({ userId })
-    });
-    return handleResponse(res);
+    try {
+      const idToUse = paymentId || userId || "default";
+      const res = await fetch(getApiUrl(`/api/admin/payments/${encodeURIComponent(idToUse)}/reject`), {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ userId })
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    await rejectPaymentDirect(paymentId, userId);
+    return { message: "Payment marked as rejected" };
   },
 
   async adminDeletePayment(paymentId: string, details?: { userId?: string; userName?: string; transactionId?: string }): Promise<{ message: string }> {
-    const safeId = encodeURIComponent(paymentId || "default");
-    const res = await fetch(getApiUrl(`/api/admin/payments/${safeId}`), {
-      method: "DELETE",
-      headers: getHeaders(),
-      body: JSON.stringify(details || {})
-    });
-    return handleResponse(res);
+    try {
+      const safeId = encodeURIComponent(paymentId || "default");
+      const res = await fetch(getApiUrl(`/api/admin/payments/${safeId}`), {
+        method: "DELETE",
+        headers: getHeaders(),
+        body: JSON.stringify(details || {})
+      });
+      if (res.ok) {
+        return await handleResponse(res);
+      }
+    } catch (e) {}
+
+    await deletePaymentDirect(paymentId);
+    return { message: "Payment deleted successfully" };
   },
 
   async adminFetchStats(): Promise<{

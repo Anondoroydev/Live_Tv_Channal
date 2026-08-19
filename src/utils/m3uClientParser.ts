@@ -186,12 +186,91 @@ export function parseM3UClient(
   };
 }
 
+export function getStoredChannelsDirect(): Channel[] {
+  try {
+    const isCleared = localStorage.getItem("myiptv_channels_cleared");
+    if (isCleared === "true") {
+      return [];
+    }
+
+    let deletedIds = new Set<string>();
+    try {
+      const deletedStr = localStorage.getItem("myiptv_deleted_channel_ids");
+      if (deletedStr) {
+        deletedIds = new Set(JSON.parse(deletedStr));
+      }
+    } catch (e) {}
+
+    const local = localStorage.getItem("myiptv_custom_channels");
+    if (local !== null) {
+      const parsed = JSON.parse(local);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name));
+      }
+    }
+
+    return (INITIAL_CHANNELS as Channel[]).filter(
+      (c) => !deletedIds.has(c.id) && !deletedIds.has(c.name),
+    );
+  } catch (e) {
+    return INITIAL_CHANNELS as Channel[];
+  }
+}
+
+export async function deleteChannelDirect(id: string) {
+  try {
+    let deletedIds = new Set<string>();
+    try {
+      const deletedStr = localStorage.getItem("myiptv_deleted_channel_ids");
+      if (deletedStr) {
+        deletedIds = new Set(JSON.parse(deletedStr));
+      }
+    } catch (e) {}
+
+    deletedIds.add(id);
+    localStorage.setItem(
+      "myiptv_deleted_channel_ids",
+      JSON.stringify(Array.from(deletedIds)),
+    );
+
+    const current = getStoredChannelsDirect();
+    const updated = current.filter((c) => c.id !== id);
+    await saveChannelsDirect(updated);
+  } catch (e) {
+    console.warn("deleteChannelDirect error:", e);
+  }
+}
+
+export async function clearAllChannelsDirect() {
+  try {
+    localStorage.setItem("myiptv_channels_cleared", "true");
+    localStorage.setItem("myiptv_custom_channels", "[]");
+    await saveChannelsDirect([], "cleared");
+  } catch (e) {
+    console.warn("clearAllChannelsDirect error:", e);
+  }
+}
+
+export async function restoreDefaultChannelsDirect(): Promise<Channel[]> {
+  try {
+    localStorage.removeItem("myiptv_channels_cleared");
+    localStorage.removeItem("myiptv_deleted_channel_ids");
+    await saveChannelsDirect(INITIAL_CHANNELS as Channel[], "default");
+    return INITIAL_CHANNELS as Channel[];
+  } catch (e) {
+    return INITIAL_CHANNELS as Channel[];
+  }
+}
+
 export async function saveChannelsDirect(
   channels: Channel[],
   sourceType: string = "m3u_text",
   sourceUrl: string = "",
 ) {
   try {
+    if (channels.length > 0) {
+      localStorage.removeItem("myiptv_channels_cleared");
+    }
     localStorage.setItem("myiptv_custom_channels", JSON.stringify(channels));
     localStorage.setItem(
       "myiptv_playlist_source",

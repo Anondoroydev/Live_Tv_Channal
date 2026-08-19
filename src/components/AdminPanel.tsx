@@ -318,6 +318,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
         ...prev,
         totalChannels: Math.max(0, prev.totalChannels - 1),
       }));
+      onDataChanged?.();
     } catch (err: any) {
       alert(err.message);
     }

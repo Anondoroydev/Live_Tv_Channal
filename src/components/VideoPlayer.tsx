@@ -678,10 +678,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const hasHeaders = urlStr.includes("|");
       const isHttpsPage = typeof window !== "undefined" && window.location.protocol === "https:";
       const isHttpStream = urlStr.startsWith("http://");
+      const isHttpsStream = urlStr.startsWith("https://");
+      const isLocalhost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
-      // When streamProxyEnabled is ON: proxy is used for external streams
-      // When streamProxyEnabled is OFF: direct is used (except for custom headers or HTTP on HTTPS)
-      const shouldUseProxy = streamProxyEnabled ? true : (hasHeaders || (isHttpsPage && isHttpStream));
+      // On deployed HTTPS domains (like Vercel), direct HTTPS streaming is fast and doesn't hit serverless timeouts
+      // Proxy is used for HTTP streams on HTTPS or streams with custom headers
+      const shouldUseProxy = isLocalhost
+        ? streamProxyEnabled
+        : (hasHeaders || (isHttpsPage && isHttpStream));
 
       if (shouldUseProxy && (urlStr.startsWith("http://") || urlStr.startsWith("https://"))) {
         const proxyPath = "/api/proxy";
