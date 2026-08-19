@@ -43,6 +43,25 @@ export const SettingsView: React.FC<{ onClose?: () => void }> = ({ onClose }) =>
   });
 
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [customApiUrl, setCustomApiUrl] = useState(() => {
+    return localStorage.getItem("myiptv_custom_api_url") || "";
+  });
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  const handleSaveApiUrl = () => {
+    try {
+      if (customApiUrl.trim()) {
+        localStorage.setItem("myiptv_custom_api_url", customApiUrl.trim());
+      } else {
+        localStorage.removeItem("myiptv_custom_api_url");
+      }
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+      // Force clear cache so new server is called
+      localStorage.removeItem("myiptv_jwt_token");
+      localStorage.removeItem("myiptv_user_data");
+    } catch (e) {}
+  };
 
   const updateSetting = <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => {
     const updated = { ...settings, [key]: value };
@@ -234,6 +253,38 @@ export const SettingsView: React.FC<{ onClose?: () => void }> = ({ onClose }) =>
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Custom Server/API URL Configuration */}
+          <div className="border-t border-slate-800/60 pt-3">
+            <p className="text-xs font-bold text-white mb-1.5 flex items-center justify-between">
+              <span>{isBn ? "সার্ভার URL (API Server)" : "Custom Server (API URL)"}</span>
+              {saveSuccess && (
+                <span className="text-[10px] text-emerald-400 font-bold animate-pulse">
+                  {isBn ? "সংরক্ষিত হয়েছে!" : "Saved!"}
+                </span>
+              )}
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder={isBn ? "যেমন: https://my-app.vercel.app" : "e.g., https://my-app.vercel.app"}
+                value={customApiUrl}
+                onChange={(e) => setCustomApiUrl(e.target.value)}
+                className="flex-1 bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+              />
+              <button
+                onClick={handleSaveApiUrl}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-black text-xs font-black rounded-xl transition-all shadow-md shrink-0"
+              >
+                {isBn ? "সেভ" : "Save"}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {isBn 
+                ? "নতুন ডিভাইসে চ্যানেল বা লগইন সমস্যা হলে এখানে আপনার Vercel/সার্ভার লিংক দিন।" 
+                : "Enter your Vercel deployment URL if channels do not load on new devices."}
+            </p>
           </div>
 
           {/* Playlist & Adult Lock PIN Management */}

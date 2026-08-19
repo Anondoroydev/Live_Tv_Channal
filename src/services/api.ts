@@ -83,10 +83,16 @@ async function handleResponse<T = any>(res: Response): Promise<T> {
 export const getApiUrl = (path: string): string => {
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
   
+  const customUrl = typeof window !== "undefined" ? localStorage.getItem("myiptv_custom_api_url") : null;
+  if (customUrl) {
+    const cleanBase = customUrl.trim().replace(/\/+$/, "");
+    return `${cleanBase}${path}`;
+  }
+
   const isNative = typeof window !== "undefined" && 
     (window.location.protocol === "capacitor:" || window.location.protocol === "file:");
   
-  const base = isNative ? "http://localhost:3000" : "";
+  const base = isNative ? "https://ais-pre-nurwmx6ptrlcqzgzu3d7mc-442599721263.asia-southeast1.run.app" : "";
   return `${base}${path}`;
 };
 
