@@ -1,6 +1,11 @@
 {
   "version": 2,
   "framework": "vite",
+  "functions": {
+    "api/index.js": {
+      "runtime": "vercel-node@latest"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
