@@ -372,6 +372,16 @@ export async function ensureSynced() {
   return syncPromise;
 }
 
+// Global middleware to guarantee that firestore channels are loaded before any api endpoints process a request
+app.use(async (req, res, next) => {
+  try {
+    await ensureSynced();
+  } catch (e) {
+    console.warn("ensureSynced error in middleware:", e);
+  }
+  next();
+});
+
 async function syncFromFirestore() {
   let loadedChannels: Channel[] = [];
   // Load channels from local disk cache first if available
@@ -379,7 +389,7 @@ async function syncFromFirestore() {
     try {
       const cachedData = fs.readFileSync(CHANNELS_CACHE_FILE, "utf8");
       const parsed = JSON.parse(cachedData);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         loadedChannels = parsed.map((c) => ({
           ...c,
           isPremium: classifyIsPremium(c.name, c.category),
@@ -387,6 +397,19 @@ async function syncFromFirestore() {
       }
     } catch (e) {
       console.error("Error reading channels disk cache:", e);
+    }
+  }
+
+  // Fallback: If disk cache didn't yield any channels, preserve channelsStore if populated,
+  // or fall back to INITIAL_CHANNELS so the user never sees an empty list on cold boots.
+  if (loadedChannels.length === 0) {
+    if (channelsStore && channelsStore.length > 0) {
+      loadedChannels = channelsStore;
+    } else {
+      loadedChannels = (INITIAL_CHANNELS || []).map((c) => ({
+        ...c,
+        isPremium: classifyIsPremium(c.name, c.category),
+      }));
     }
   }
 

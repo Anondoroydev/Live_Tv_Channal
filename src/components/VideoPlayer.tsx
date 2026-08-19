@@ -583,26 +583,33 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const [unlockedChannels, setUnlockedChannels] = useState<Record<string, boolean>>({});
 
-  // Check if current user is allowed to watch this channel
-  const isSubscriptionActive =
-    !!currentUser &&
-    (currentUser.role === "admin" ||
-      (currentUser.subscriptionPlan !== "Free" &&
-        currentUser.subscriptionPlan !== "Expired" &&
-        (!currentUser.subscriptionExpiresAt ||
-          new Date(currentUser.subscriptionExpiresAt).getTime() > Date.now())));
+  // Check if current user is allowed to watch this channel (requires admin approval for paid plans)
+  const isSubscriptionActive = Boolean(
+    currentUser &&
+      (currentUser.role === "admin" ||
+        (currentUser.isApprovedByAdmin === true &&
+          currentUser.subscriptionStatus === "active" &&
+          currentUser.subscriptionPlan !== "Free" &&
+          currentUser.subscriptionPlan !== "Expired" &&
+          currentUser.subscriptionExpiresAt &&
+          new Date(currentUser.subscriptionExpiresAt).getTime() > Date.now())),
+  );
+
+  const isPendingApproval = Boolean(
+    currentUser &&
+      currentUser.role !== "admin" &&
+      currentUser.subscriptionPlan !== "Free" &&
+      !currentUser.isApprovedByAdmin,
+  );
 
   const isPremiumLocked =
     channel?.isPremium && !isSubscriptionActive && !unlockedChannels[channel?.id || ""];
 
-  const [proxyAttempted, setProxyAttempted] = useState<boolean>(false);
-  const [directAttempted, setDirectAttempted] = useState<boolean>(false);
+  const [streamMode, setStreamMode] = useState<"auto" | "direct" | "cors_proxy" | "server_proxy">("auto");
 
   // Reset fallback states when channel changes
   useEffect(() => {
-    setProxyAttempted(false);
-    setDirectAttempted(false);
-    setForceDirect(false);
+    setStreamMode("auto");
     setRetryCount(0);
     setErrorMsg(null);
   }, [channel?.id]);
@@ -659,7 +666,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return `${window.location.origin}${path.startsWith("/") ? "" : "/"}${path}`;
     };
 
-    const getEffectiveUrl = (rawUrl?: string, forceDirectParam = false) => {
+    const getEffectiveUrl = (rawUrl?: string, mode: "auto" | "direct" | "cors_proxy" | "server_proxy" = "auto") => {
       const urlStr = typeof rawUrl === "string" ? rawUrl.trim() : "";
       if (!urlStr) return "";
       
@@ -671,38 +678,44 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         return getAbsoluteUrl(urlStr);
       }
 
-      if (forceDirectParam) {
-        return urlStr.split("|")[0];
+      const cleanDirectUrl = urlStr.split("|")[0];
+
+      if (mode === "direct") {
+        return cleanDirectUrl;
       }
 
+      if (mode === "cors_proxy") {
+        return `https://corsproxy.io/?url=${encodeURIComponent(cleanDirectUrl)}`;
+      }
+
+      if (mode === "server_proxy") {
+        const hasHeaders = urlStr.includes("|");
+        if (hasHeaders) {
+          const parts = urlStr.split("|");
+          return getAbsoluteUrl(`/api/proxy?url=${encodeURIComponent(parts[0])}&headers=${encodeURIComponent(parts.slice(1).join("|"))}`);
+        }
+        return getAbsoluteUrl(`/api/proxy?url=${encodeURIComponent(urlStr)}`);
+      }
+
+      // Mode: "auto"
       const hasHeaders = urlStr.includes("|");
       const isHttpsPage = typeof window !== "undefined" && window.location.protocol === "https:";
       const isHttpStream = urlStr.startsWith("http://");
-      const isHttpsStream = urlStr.startsWith("https://");
       const isLocalhost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
-      // On deployed HTTPS domains (like Vercel), direct HTTPS streaming is fast and doesn't hit serverless timeouts
-      // Proxy is used for HTTP streams on HTTPS or streams with custom headers
-      const shouldUseProxy = isLocalhost
-        ? streamProxyEnabled
-        : (hasHeaders || (isHttpsPage && isHttpStream));
-
-      if (shouldUseProxy && (urlStr.startsWith("http://") || urlStr.startsWith("https://"))) {
-        const proxyPath = "/api/proxy";
-        if (urlStr.includes("/api/proxy") || urlStr.includes("/api/proxy-stream")) return getAbsoluteUrl(urlStr);
-        if (hasHeaders) {
-          const parts = urlStr.split("|");
-          const url = parts[0];
-          const headers = parts.slice(1).join("|");
-          return getAbsoluteUrl(`${proxyPath}?url=${encodeURIComponent(url)}&headers=${encodeURIComponent(headers)}`);
-        }
-        return getAbsoluteUrl(`${proxyPath}?url=${encodeURIComponent(urlStr)}`);
+      if (isLocalhost && streamProxyEnabled) {
+        return getAbsoluteUrl(`/api/proxy?url=${encodeURIComponent(urlStr)}`);
       }
-      return urlStr.split("|")[0];
+
+      if (hasHeaders || (isHttpsPage && isHttpStream)) {
+        return getAbsoluteUrl(`/api/proxy?url=${encodeURIComponent(urlStr)}`);
+      }
+
+      return cleanDirectUrl;
     };
 
     // Auto-stream playback URL
-    let currentEffectiveUrl = getEffectiveUrl(channel.streamUrl, forceDirect);
+    let currentEffectiveUrl = getEffectiveUrl(channel.streamUrl, streamMode);
     const isUsingProxyInitial = currentEffectiveUrl.includes("/api/proxy");
 
     const playVideo = () => {
@@ -718,9 +731,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               if (!isCancelled) {
                 setIsPlaying(true);
                 setIsBuffering(false);
-                // On success, reset our fallback flags
-                setProxyAttempted(false);
-                setDirectAttempted(false);
               }
             })
             .catch((err) => {
@@ -929,16 +939,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               const is403 = data.response && data.response.code === 403;
               const isFetchError = data.response && data.response.code === 0;
 
-              // If network fails and we haven't tried the fallback yet, switch proxy/direct
-              if (isUsingProxyInitial && !directAttempted) {
-                console.warn("[Smart Proxy] Proxied load failed, falling back to DIRECT...");
-                setDirectAttempted(true);
-                setForceDirect(true);
+              // Automatic multi-stage stream recovery for Vercel deployment
+              if (streamMode === "auto") {
+                console.warn("[Stream Recovery] Auto load failed, switching to direct stream...");
+                setStreamMode("direct");
                 return;
-              } else if (!isUsingProxyInitial && !proxyAttempted && (is403 || is404 || isFetchError || is429)) {
-                console.warn("[Smart Proxy] Direct load failed, falling back to PROXY...");
-                setProxyAttempted(true);
-                setForceDirect(false);
+              } else if (streamMode === "direct") {
+                console.warn("[Stream Recovery] Direct load failed, switching to CORS proxy...");
+                setStreamMode("cors_proxy");
+                return;
+              } else if (streamMode === "cors_proxy") {
+                console.warn("[Stream Recovery] CORS proxy failed, switching to server proxy...");
+                setStreamMode("server_proxy");
                 return;
               }
 
@@ -1180,7 +1192,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       }
     };
-  }, [channel, isPremiumLocked, autoPlay, autoReconnect, retryTrigger, forceDirect]);
+  }, [channel, isPremiumLocked, autoPlay, autoReconnect, retryTrigger, streamMode]);
 
   // Continuous auto-resume & freeze-recovery watchdog for live channel playback
   useEffect(() => {
@@ -1535,15 +1547,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
 
           <span className="text-xs font-extrabold text-yellow-400 tracking-widest uppercase mb-1 flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4" /> Premium Channel
+            <Sparkles className="w-4 h-4" /> {isPendingApproval ? "Approval Pending" : "Premium Channel"}
           </span>
 
           <h2 className="text-2xl font-black text-white mb-2 max-w-md">
-            🔒 VIP Premium Channel Locked
+            {isPendingApproval ? "⏳ Payment Awaiting Admin Approval" : "🔒 VIP Premium Channel Locked"}
           </h2>
 
           <p className="text-sm text-gray-300 max-w-md mb-6 leading-relaxed">
-            {channel?.name || "This channel"} requires an active VIP Subscription package or activation code to watch.
+            {isPendingApproval
+              ? "আপনার পেমেন্ট রিকোয়েস্ট জমা হয়েছে। অ্যাডমিন পেমেন্ট ভেরিফাই করে অ্যাপ্রুভ (Approve) করার সাথে সাথে এই চ্যানেলগুলো স্বয়ংক্রিয়ভাবে আনলক হয়ে যাবে।"
+              : `${channel?.name || "This channel"} requires an active VIP Subscription package or activation code to watch.`}
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -1551,7 +1565,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               onClick={onOpenSubscription}
               className="px-6 py-3.5 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-2xl shadow-xl shadow-amber-500/20 text-xs uppercase tracking-wider transition-all scale-105 flex items-center gap-2"
             >
-              <Sparkles className="w-4 h-4" /> Buy Package / Unlock
+              <Sparkles className="w-4 h-4" /> {isPendingApproval ? "View Payment Status" : "Buy Package / Unlock"}
             </button>
 
             {!currentUser && (
