@@ -25,14 +25,14 @@ import {
 import {
   INITIAL_CHANNELS,
   generateSampleEPG,
-} from "../src/data/initialChannels.ts";
+} from "../src/data/initialChannels";
 import type {
   Channel,
   EPGProgram,
   User,
   SubscriptionPlan,
   M3UParseResult,
-} from "../src/types.ts";
+} from "../src/types";
 
 // Disable TLS verification for external IPTV stream sources & proxies
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";

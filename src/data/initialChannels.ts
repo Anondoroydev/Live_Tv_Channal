@@ -1,4 +1,4 @@
-import type { Channel, EPGProgram } from "../types.ts";
+import type { Channel, EPGProgram } from "../types";
 
 export const INITIAL_CHANNELS: Channel[] = [
   {
