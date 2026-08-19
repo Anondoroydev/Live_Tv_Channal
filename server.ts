@@ -7,7 +7,6 @@ import https from "https";
 import fs from "fs";
 import zlib from "zlib";
 import stream from "stream";
-import { createServer as createViteServer } from "vite";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -197,7 +196,10 @@ try {
 }
 
 // In-Memory Database State
-let channelsStore: Channel[] = [];
+let channelsStore: Channel[] = (INITIAL_CHANNELS || []).map((c) => ({
+  ...c,
+  isPremium: classifyIsPremium(c.name, c.category),
+}));
 
 let playlistSourceStore = {
   type: "default" as "default" | "m3u_text" | "m3u_url" | "xtream" | "cleared",
@@ -349,7 +351,26 @@ async function safeFirestoreWrite(writeFn: () => Promise<void>) {
   }
 }
 
-const CHANNELS_CACHE_FILE = path.join(process.cwd(), "channels_cache.json");
+const CHANNELS_CACHE_FILE = process.env.VERCEL
+  ? path.join("/tmp", "channels_cache.json")
+  : path.join(process.cwd(), "channels_cache.json");
+
+let hasSynced = false;
+let syncPromise: Promise<void> | null = null;
+
+export async function ensureSynced() {
+  if (hasSynced) return;
+  if (!syncPromise) {
+    syncPromise = syncFromFirestore()
+      .catch((err) => {
+        console.warn("⚠️ Firestore sync failed, using in-memory store:", err?.message || err);
+      })
+      .finally(() => {
+        hasSynced = true;
+      });
+  }
+  return syncPromise;
+}
 
 async function syncFromFirestore() {
   let loadedChannels: Channel[] = [];
@@ -3061,11 +3082,16 @@ async function start() {
   }
 
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.warn("Vite middleware not loaded, continuing as API server only:", e);
+    }
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
