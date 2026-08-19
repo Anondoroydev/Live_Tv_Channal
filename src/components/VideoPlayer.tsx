@@ -1080,6 +1080,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             setMpegtsPlayer(null);
           }
 
+          const isFormatUnsupported = errStr.includes("formatusunsupported") || errStr.includes("non mpeg-ts") || errStr.includes("unsupported media type");
+
+          if (isFormatUnsupported) {
+            initNativeVideo();
+            return;
+          }
+
           if (isAC3orMseError && !videoOnly) {
              console.warn("MSE/AC-3 error detected in mpegts. Restarting in video-only mode...");
              initMpegTs(true);

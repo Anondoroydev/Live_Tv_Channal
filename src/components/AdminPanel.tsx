@@ -108,14 +108,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onDataChanged }) => {
   const loadData = async (notifyParent = true) => {
     try {
       const [s, chsData, us, pSource] = await Promise.all([
-        apiService.adminFetchStats(),
+        apiService.adminFetchStats().catch(() => ({
+          totalChannels: 0,
+          activeChannels: 0,
+          premiumChannels: 0,
+          totalUsers: 0,
+          activeSubscriptions: 0,
+        })),
         apiService.adminFetchChannels().catch(() => ({ channels: [], total: 0 })),
-        apiService.adminFetchUsers(),
+        apiService.adminFetchUsers().catch(() => []),
         apiService.getPlaylistSource().catch(() => null),
       ]);
-      setStats(s);
-      setChannels(chsData.channels || []);
-      setUsers(us);
+      setStats(
+        s || {
+          totalChannels: 0,
+          activeChannels: 0,
+          premiumChannels: 0,
+          totalUsers: 0,
+          activeSubscriptions: 0,
+        },
+      );
+      const chList = Array.isArray(chsData)
+        ? chsData
+        : Array.isArray((chsData as any)?.channels)
+          ? (chsData as any).channels
+          : [];
+      setChannels(chList);
+
+      const userList = Array.isArray(us)
+        ? us
+        : Array.isArray((us as any)?.users)
+          ? (us as any).users
+          : [];
+      setUsers(userList);
+
       if (pSource) setPlaylistSource(pSource);
       if (notifyParent) {
         onDataChanged?.();
@@ -408,7 +434,8 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlaze
 https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4`;
 
   // Filter channels based on search
-  const filteredChannels = (channels || []).filter(
+  const safeChannels = Array.isArray(channels) ? channels : [];
+  const filteredChannels = safeChannels.filter(
     (ch) =>
       (ch?.name || "").toLowerCase().includes((channelSearch || "").toLowerCase()) ||
       (ch?.category || "").toLowerCase().includes((channelSearch || "").toLowerCase()) ||
@@ -416,7 +443,8 @@ https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.m
   );
 
   // Filter users based on search
-  const filteredUsers = (users || []).filter(
+  const safeUsers = Array.isArray(users) ? users : [];
+  const filteredUsers = safeUsers.filter(
     (u) =>
       (u?.username || "").toLowerCase().includes((userSearch || "").toLowerCase()) ||
       (u?.email && typeof u.email === "string" && u.email.toLowerCase().includes((userSearch || "").toLowerCase())),
