@@ -95,7 +95,7 @@ const getStoredChannelsFallback = (): Channel[] => {
 };
 
 export const apiService = {
-  // Auth API with Bulletproof Local Fallback
+  // Auth API
   async login(
     email: string,
     password?: string,
@@ -106,111 +106,22 @@ export const apiService = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      if (res.ok) {
-        const data = await handleResponse<{ token: string; user: User }>(res);
+      
+      const data = await res.json().catch(() => ({}));
+      
+      if (res.ok && data.token && data.user) {
         setStoredToken(data.token);
         try {
           localStorage.setItem("myiptv_user_data", JSON.stringify(data.user));
         } catch (e) {}
         return data;
-      }
-      if (res.status === 401 || res.status === 403) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Authentication failed: ${res.status}`);
-      }
-      if (res.status !== 404 && res.status !== 405 && res.status !== 500) {
-        return await handleResponse(res);
+      } else {
+        throw new Error(data.error || `Authentication failed: ${res.status}`);
       }
     } catch (err: any) {
-      if (err.message && (
-        err.message.includes("Incorrect Password") || 
-        err.message.includes("Incorrect Password") || 
-        err.message.includes("restricted") || 
-        err.message.includes("Access Denied") ||
-        err.message.includes("Invalid password") ||
-        err.message.includes("Incorrect password") ||
-        err.message.includes("Incorrect Administrator Password")
-      )) {
-        throw err;
-      }
-      console.warn("Server login request failed, checking local/admin fallback:", err);
+      console.error("Login request failed:", err);
+      throw err;
     }
-
-    // Fallback: Check Admin credentials
-    const cleanEmail = (email || "").toLowerCase().trim();
-    const isAdmin =
-      cleanEmail === "admin" ||
-      cleanEmail === "admin@myiptv.com" ||
-      cleanEmail === "ajoysarker553@gmail.com" ||
-      cleanEmail === "anondoray553@gmail.com" ||
-      cleanEmail === "ajoysarkar9098@gmail.com";
-
-    const allowedAdminPasswords = ["password", "admin", "admin123", "123456"];
-    if (isAdmin && (!password || allowedAdminPasswords.includes(password))) {
-      const adminUser: User = {
-        id: "user-admin",
-        username: cleanEmail === "admin" ? "admin" : cleanEmail.split("@")[0],
-        email: cleanEmail.includes("@") ? cleanEmail : "admin@myiptv.com",
-        role: "admin",
-        subscriptionPlan: "365 Days",
-        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        favorites: ["ch-0", "ch-1"],
-        recentlyWatched: [],
-        isApprovedByAdmin: true,
-      };
-      const token = btoa(JSON.stringify({ id: adminUser.id, role: "admin", username: adminUser.username }));
-      setStoredToken(token);
-      try {
-        localStorage.setItem("myiptv_user_data", JSON.stringify(adminUser));
-      } catch (e) {}
-      return { token, user: adminUser };
-    }
-
-    // Fallback: Check local registered user in localStorage
-    try {
-      const savedUsersStr = localStorage.getItem("myiptv_local_users");
-      if (savedUsersStr) {
-        const savedUsers: any[] = JSON.parse(savedUsersStr);
-        const match = savedUsers.find(
-          (u) =>
-            (u.email || "").toLowerCase() === cleanEmail ||
-            (u.username || "").toLowerCase() === cleanEmail
-        );
-        if (match) {
-          if (!password || match.password === password) {
-            const token = btoa(JSON.stringify({ id: match.id, role: match.role, username: match.username }));
-            setStoredToken(token);
-            try {
-              localStorage.setItem("myiptv_user_data", JSON.stringify(match));
-            } catch (e) {}
-            return { token, user: match };
-          } else {
-            throw new Error("Invalid password");
-          }
-        }
-      }
-    } catch (e: any) {
-      if (e?.message === "Invalid password") throw e;
-    }
-
-    // Default general user fallback
-    const fallbackUser: User = {
-      id: `user-${Date.now()}`,
-      username: cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail,
-      email: cleanEmail.includes("@") ? cleanEmail : `${cleanEmail}@myiptv.com`,
-      role: "user",
-      subscriptionPlan: "Free",
-      subscriptionExpiresAt: null,
-      favorites: [],
-      recentlyWatched: [],
-      isApprovedByAdmin: false,
-    };
-    const token = btoa(JSON.stringify({ id: fallbackUser.id, role: "user", username: fallbackUser.username }));
-    setStoredToken(token);
-    try {
-      localStorage.setItem("myiptv_user_data", JSON.stringify(fallbackUser));
-    } catch (e) {}
-    return { token, user: fallbackUser };
   },
 
   async register(
@@ -224,53 +135,22 @@ export const apiService = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, email, password }),
       });
-      if (res.ok) {
-        const data = await handleResponse<{ token: string; user: User; message: string }>(res);
+      
+      const data = await res.json().catch(() => ({}));
+      
+      if (res.ok && data.token && data.user) {
         setStoredToken(data.token);
         try {
           localStorage.setItem("myiptv_user_data", JSON.stringify(data.user));
         } catch (e) {}
         return data;
+      } else {
+        throw new Error(data.error || `Registration failed: ${res.status}`);
       }
-      if (res.status !== 404 && res.status !== 405 && res.status !== 500) {
-        return await handleResponse(res);
-      }
-    } catch (err) {
-      console.warn("Server register request failed, using local registration fallback:", err);
+    } catch (err: any) {
+      console.error("Registration request failed:", err);
+      throw err;
     }
-
-    const cleanEmail = (email || "").toLowerCase().trim();
-    const cleanUsername = (username || "").trim();
-    const isAdmin =
-      cleanEmail === "admin@myiptv.com" ||
-      cleanEmail === "ajoysarker553@gmail.com" ||
-      cleanEmail === "anondoray553@gmail.com" ||
-      cleanEmail === "ajoysarkar9098@gmail.com" ||
-      cleanUsername.toLowerCase() === "admin";
-
-    const newUser: User = {
-      id: `user-${Date.now()}`,
-      username: cleanUsername,
-      email: cleanEmail,
-      role: isAdmin ? "admin" : "user",
-      subscriptionPlan: isAdmin ? "365 Days" : "Free",
-      subscriptionExpiresAt: isAdmin ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() : null,
-      favorites: [],
-      recentlyWatched: [],
-      isApprovedByAdmin: isAdmin,
-    };
-
-    try {
-      const savedUsersStr = localStorage.getItem("myiptv_local_users") || "[]";
-      const savedUsers = JSON.parse(savedUsersStr);
-      savedUsers.push({ ...newUser, password });
-      localStorage.setItem("myiptv_local_users", JSON.stringify(savedUsers));
-      localStorage.setItem("myiptv_user_data", JSON.stringify(newUser));
-    } catch (e) {}
-
-    const token = btoa(JSON.stringify({ id: newUser.id, role: newUser.role, username: newUser.username }));
-    setStoredToken(token);
-    return { token, user: newUser, message: "Registration successful!" };
   },
 
   async getCurrentUser(): Promise<User | null> {
