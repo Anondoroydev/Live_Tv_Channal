@@ -196,10 +196,7 @@ try {
 }
 
 // In-Memory Database State
-let channelsStore: Channel[] = (INITIAL_CHANNELS || []).map((c) => ({
-  ...c,
-  isPremium: classifyIsPremium(c.name, c.category),
-}));
+let channelsStore: Channel[] = [];
 
 let playlistSourceStore = {
   type: "default" as "default" | "m3u_text" | "m3u_url" | "xtream" | "cleared",

@@ -209,11 +209,9 @@ export function getStoredChannelsDirect(): Channel[] {
       }
     }
 
-    return (INITIAL_CHANNELS as Channel[]).filter(
-      (c) => !deletedIds.has(c.id) && !deletedIds.has(c.name),
-    );
+    return [];
   } catch (e) {
-    return INITIAL_CHANNELS as Channel[];
+    return [];
   }
 }
 
