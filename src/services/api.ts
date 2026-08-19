@@ -114,10 +114,25 @@ export const apiService = {
         } catch (e) {}
         return data;
       }
+      if (res.status === 401 || res.status === 403) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Authentication failed: ${res.status}`);
+      }
       if (res.status !== 404 && res.status !== 405 && res.status !== 500) {
         return await handleResponse(res);
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err.message && (
+        err.message.includes("Incorrect Password") || 
+        err.message.includes("Incorrect Password") || 
+        err.message.includes("restricted") || 
+        err.message.includes("Access Denied") ||
+        err.message.includes("Invalid password") ||
+        err.message.includes("Incorrect password") ||
+        err.message.includes("Incorrect Administrator Password")
+      )) {
+        throw err;
+      }
       console.warn("Server login request failed, checking local/admin fallback:", err);
     }
 

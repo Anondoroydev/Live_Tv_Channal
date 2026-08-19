@@ -31,6 +31,16 @@
       },
       "required": ["name", "streamUrl"]
     },
+    "channel_chunks": {
+      "title": "Channel Chunks",
+      "description": "Sharded subsets of channels to stay below Firestore size limits",
+      "properties": {
+        "chunkIndex": { "type": "number" },
+        "channels": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["chunkIndex", "channels"]
+    },
     "playlists": {
       "title": "Playlists",
       "description": "Xtream accounts and M3U playlists",

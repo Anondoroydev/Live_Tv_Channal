@@ -285,12 +285,39 @@ export async function saveChannelsDirect(
 
   try {
     if (db) {
-      const { doc, setDoc } = await import("firebase/firestore");
-      await setDoc(doc(db, "settings", "channelsList"), {
-        channels,
-        updatedAt: new Date().toISOString(),
-        totalCount: channels.length,
+      const { doc, setDoc, getDocs, collection, writeBatch } = await import("firebase/firestore");
+      
+      // Delete existing chunks and fallback legacy doc first to prevent dirty state
+      const chunksColl = collection(db, "channel_chunks");
+      const existingSnap = await getDocs(chunksColl);
+      const batch = writeBatch(db);
+      
+      existingSnap.docs.forEach((doc) => {
+        batch.delete(doc.ref);
       });
+      
+      try {
+        batch.delete(doc(db, "settings", "channelsList"));
+      } catch (e) {}
+      
+      await batch.commit();
+
+      // Persist channels in chunks of 100
+      const chunkSize = 100;
+      const totalChunks = Math.ceil(channels.length / chunkSize);
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize;
+        const end = start + chunkSize;
+        const chunkChannels = channels.slice(start, end);
+        
+        await setDoc(doc(db, "channel_chunks", `chunk_${i}`), {
+          chunkIndex: i,
+          channels: chunkChannels,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
       await setDoc(doc(db, "settings", "playlistSource"), {
         type: sourceType,
         url: sourceUrl,

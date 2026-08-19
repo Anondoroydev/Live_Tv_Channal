@@ -571,31 +571,60 @@ async function syncFromFirestore() {
       return;
     }
 
-    // If channelsStore is empty from cache, check Firestore settings/channelsList
+    // If channelsStore is empty from cache, check Firestore channel_chunks with fallback
     if (db && !firestoreQuotaExhausted) {
-      let channelsDoc;
       try {
-        channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
+        const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+        if (chunksSnap && !chunksSnap.empty) {
+          const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+          chunksSnap.docs.forEach((d) => {
+            const data = d.data();
+            if (data && Array.isArray(data.channels)) {
+              loadedChunks.push({
+                chunkIndex: data.chunkIndex ?? 0,
+                channels: data.channels,
+              });
+            }
+          });
+          
+          // Sort chunks by chunkIndex ascending to maintain order
+          loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+          
+          const fsChannels = loadedChunks.flatMap((c) => c.channels);
+          if (fsChannels.length > 0) {
+            channelsStore = fsChannels.map((c) => ({
+              ...c,
+              isPremium: classifyIsPremium(c.name, c.category),
+            }));
+            console.log(`Loaded ${channelsStore.length} total channels from Firestore channel_chunks`);
+            try {
+              fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+            } catch (e) {}
+          }
+        } else {
+          // Legacy fallback
+          let channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
+          if (channelsDoc && channelsDoc.exists()) {
+            const data = channelsDoc.data();
+            if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+              const fsChannels = data.channels as Channel[];
+              channelsStore = fsChannels.map((c) => ({
+                ...c,
+                isPremium: classifyIsPremium(c.name, c.category),
+              }));
+              console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
+              try {
+                fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+              } catch (e) {}
+            }
+          }
+        }
       } catch (err: any) {
         if (err?.message?.includes("RESOURCE_EXHAUSTED") || err?.code === 8) {
           firestoreQuotaExhausted = true;
           db = null;
         }
-      }
-
-      if (channelsDoc && channelsDoc.exists()) {
-        const data = channelsDoc.data();
-        if (data && Array.isArray(data.channels) && data.channels.length > 0) {
-          const fsChannels = data.channels as Channel[];
-          channelsStore = fsChannels.map((c) => ({
-            ...c,
-            isPremium: classifyIsPremium(c.name, c.category),
-          }));
-          console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
-          try {
-            fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-          } catch (e) {}
-        }
+        console.warn("Error loading channels from Firestore channel_chunks:", err?.message || err);
       }
     }
 
@@ -644,12 +673,39 @@ async function persistChannels(channels: Channel[]) {
 
   await safeFirestoreWrite(async () => {
     if (!db) return;
-    await setDoc(doc(db, "settings", "channelsList"), {
-      channels,
-      updatedAt: new Date().toISOString(),
-      totalCount: channels.length,
+
+    // Delete existing chunks and fallback legacy doc first to prevent dirty state
+    const chunksColl = collection(db, "channel_chunks");
+    const existingSnap = await getDocs(chunksColl);
+    const batch = writeBatch(db);
+    
+    existingSnap.docs.forEach((doc) => {
+      batch.delete(doc.ref);
     });
-    console.log(`Successfully persisted channel metadata (${channels.length} channels) to Firestore.`);
+    
+    try {
+      batch.delete(doc(db, "settings", "channelsList"));
+    } catch (e) {}
+    
+    await batch.commit();
+
+    // Persist channels in chunks of 100
+    const chunkSize = 100;
+    const totalChunks = Math.ceil(channels.length / chunkSize);
+    
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = start + chunkSize;
+      const chunkChannels = channels.slice(start, end);
+      
+      await setDoc(doc(db, "channel_chunks", `chunk_${i}`), {
+        chunkIndex: i,
+        channels: chunkChannels,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    
+    console.log(`Successfully persisted channel metadata (${channels.length} channels in ${totalChunks} chunks) to Firestore.`);
   });
 }
 
@@ -1047,7 +1103,8 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
         .json({ error: "Incorrect Administrator Password. Try 'password' or 'admin123'." });
     }
   } else {
-    if (user.password && user.password !== password) {
+    const userPassword = user.password || "password";
+    if (userPassword !== password) {
       console.log("User password mismatch for:", inputStr);
       return res
         .status(401)
