@@ -377,6 +377,34 @@ async function checkAndReloadIfChanged() {
       if (firestoreSyncedAt && firestoreSyncedAt !== localPlaylistSyncedAt) {
         console.log(`🔄 Playlist source updated in Firestore (${firestoreSyncedAt} vs local ${localPlaylistSyncedAt}). Reloading channels...`);
         await syncFromFirestore();
+        return;
+      }
+    }
+
+    // Always check for latest channel chunks in Firestore for instant cross-device sync
+    const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+    if (chunksSnap && !chunksSnap.empty) {
+      const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+      chunksSnap.docs.forEach((d) => {
+        const docData = d.data();
+        if (docData && Array.isArray(docData.channels)) {
+          loadedChunks.push({
+            chunkIndex: docData.chunkIndex ?? 0,
+            channels: docData.channels,
+          });
+        }
+      });
+      loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+      const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+      if (fsChannels.length > 0 && fsChannels.length !== channelsStore.length) {
+        channelsStore = fsChannels.map((c) => ({
+          ...c,
+          isPremium: classifyIsPremium(c.name, c.category),
+        }));
+        console.log(`🔄 Synced ${channelsStore.length} channels from Firestore channel_chunks across devices.`);
+        try {
+          fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+        } catch (e) {}
       }
     }
   } catch (err: any) {
@@ -398,7 +426,7 @@ export async function ensureSynced() {
         });
     }
     await syncPromise;
-  } else if (now - lastSyncCheckTime > 5000) {
+  } else if (now - lastSyncCheckTime > 3000) {
     lastSyncCheckTime = now;
     await checkAndReloadIfChanged();
   }
@@ -415,14 +443,68 @@ app.use(async (req, res, next) => {
 });
 
 async function syncFromFirestore() {
-  let loadedChannels: Channel[] = [];
-  // Load channels from local disk cache first if available
-  if (fs.existsSync(CHANNELS_CACHE_FILE)) {
+  if (db && !firestoreQuotaExhausted) {
+    try {
+      // 1. Try loading channels from Firestore channel_chunks first for instant cross-device sync
+      const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+      if (chunksSnap && !chunksSnap.empty) {
+        const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+        chunksSnap.docs.forEach((d) => {
+          const docData = d.data();
+          if (docData && Array.isArray(docData.channels)) {
+            loadedChunks.push({
+              chunkIndex: docData.chunkIndex ?? 0,
+              channels: docData.channels,
+            });
+          }
+        });
+        loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+        if (fsChannels.length > 0) {
+          channelsStore = fsChannels.map((c) => ({
+            ...c,
+            isPremium: classifyIsPremium(c.name, c.category),
+          }));
+          console.log(`Loaded ${channelsStore.length} total channels from Firestore channel_chunks`);
+          try {
+            fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+          } catch (e) {}
+        }
+      } else {
+        // Legacy fallback
+        let channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
+        if (channelsDoc && channelsDoc.exists()) {
+          const data = channelsDoc.data();
+          if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+            const fsChannels = (data.channels as Channel[]).filter(Boolean);
+            channelsStore = fsChannels.map((c) => ({
+              ...c,
+              isPremium: classifyIsPremium(c.name, c.category),
+            }));
+            console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
+            try {
+              fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err?.message?.includes("RESOURCE_EXHAUSTED") || err?.code === 8) {
+        firestoreQuotaExhausted = true;
+        db = null;
+      }
+      console.warn("Error loading channels from Firestore during sync:", err?.message || err);
+    }
+  }
+
+  let loadedChannels: Channel[] = channelsStore;
+  // If still empty, load channels from local disk cache if available
+  if (loadedChannels.length === 0 && fs.existsSync(CHANNELS_CACHE_FILE)) {
     try {
       const cachedData = fs.readFileSync(CHANNELS_CACHE_FILE, "utf8");
       const parsed = JSON.parse(cachedData);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        loadedChannels = parsed.map((c) => ({
+        loadedChannels = parsed.filter(Boolean).map((c) => ({
           ...c,
           isPremium: classifyIsPremium(c.name, c.category),
         }));
@@ -432,20 +514,15 @@ async function syncFromFirestore() {
     }
   }
 
-  // Fallback: If disk cache didn't yield any channels, preserve channelsStore if populated,
-  // or fall back to INITIAL_CHANNELS so the user never sees an empty list on cold boots.
+  // Fallback: If still empty, fall back to INITIAL_CHANNELS so the user never sees an empty list on cold boots.
   if (loadedChannels.length === 0) {
-    if (channelsStore && channelsStore.length > 0) {
-      loadedChannels = channelsStore;
-    } else {
-      loadedChannels = (INITIAL_CHANNELS || []).map((c) => ({
-        ...c,
-        isPremium: classifyIsPremium(c.name, c.category),
-      }));
-    }
+    loadedChannels = (INITIAL_CHANNELS || []).filter(Boolean).map((c) => ({
+      ...c,
+      isPremium: classifyIsPremium(c.name, c.category),
+    }));
   }
 
-  channelsStore = loadedChannels.map(c => ({
+  channelsStore = loadedChannels.filter(Boolean).map(c => ({
     ...c,
     isPremium: classifyIsPremium(c.name, c.category)
   }));
@@ -456,13 +533,16 @@ async function syncFromFirestore() {
 
   // Sanitize dead/fake XXX VOD items or broken streams
   const isFakeVodList = channelsStore.some((c) =>
-    (c?.name || "").toLowerCase().includes("xxx vod") || 
-    (c?.streamUrl || "").toLowerCase().includes("mycamtv") || 
-    (c?.streamUrl || "").toLowerCase().includes("redtraffic")
+    c && (
+      (c?.name || "").toLowerCase().includes("xxx vod") || 
+      (c?.streamUrl || "").toLowerCase().includes("mycamtv") || 
+      (c?.streamUrl || "").toLowerCase().includes("redtraffic")
+    )
   );
 
   if (isFakeVodList) {
     channelsStore = channelsStore.filter((c) => 
+      c &&
       !(c?.name || "").toLowerCase().includes("xxx vod") && 
       !(c?.streamUrl || "").toLowerCase().includes("mycamtv") && 
       !(c?.streamUrl || "").toLowerCase().includes("redtraffic")
@@ -497,6 +577,7 @@ async function syncFromFirestore() {
       console.log(`Loaded ${usersStore.length} users from Firestore DB`);
     } else {
       for (const u of usersStore) {
+        if (!u) continue;
         await safeFirestoreWrite(async () => {
           if (db) await setDoc(doc(db, "users", u.id), u);
         });
@@ -508,11 +589,12 @@ async function syncFromFirestore() {
     try {
       let paymentsSnap = await getDocs(collection(db, "payments"));
       if (paymentsSnap && !paymentsSnap.empty) {
-        const loadedPayments = paymentsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }));
+        const loadedPayments = paymentsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as object) })).filter(Boolean);
         paymentsStore = loadedPayments;
         console.log(`Loaded ${paymentsStore.length} payments from Firestore DB`);
       } else {
         for (const p of paymentsStore) {
+          if (!p) continue;
           await safeFirestoreWrite(async () => {
             if (db) await setDoc(doc(db, "payments", p.id), p);
           });
@@ -585,24 +667,6 @@ async function syncFromFirestore() {
       await persistUser(defaultAdmin);
     }
 
-    // Sanitize dead/fake XXX VOD items or broken streams
-    const isFakeVodListSecond = channelsStore.some((c) =>
-      (c?.name || "").toLowerCase().includes("xxx vod") || 
-      (c?.streamUrl || "").toLowerCase().includes("mycamtv") || 
-      (c?.streamUrl || "").toLowerCase().includes("redtraffic")
-    );
-
-    if (isFakeVodListSecond) {
-      channelsStore = channelsStore.filter((c) => 
-        !(c?.name || "").toLowerCase().includes("xxx vod") && 
-        !(c?.streamUrl || "").toLowerCase().includes("mycamtv") && 
-        !(c?.streamUrl || "").toLowerCase().includes("redtraffic")
-      );
-      try {
-        fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-      } catch (e) {}
-    }
-
     // Sync Playlist Settings first
     let playlistDoc;
     try {
@@ -628,67 +692,10 @@ async function syncFromFirestore() {
       return;
     }
 
-    // If channelsStore is empty from cache, check Firestore channel_chunks with fallback
-    if (db && !firestoreQuotaExhausted) {
-      try {
-        const chunksSnap = await getDocs(collection(db, "channel_chunks"));
-        if (chunksSnap && !chunksSnap.empty) {
-          const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
-          chunksSnap.docs.forEach((d) => {
-            const data = d.data();
-            if (data && Array.isArray(data.channels)) {
-              loadedChunks.push({
-                chunkIndex: data.chunkIndex ?? 0,
-                channels: data.channels,
-              });
-            }
-          });
-          
-          // Sort chunks by chunkIndex ascending to maintain order
-          loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
-          
-          const fsChannels = loadedChunks.flatMap((c) => c.channels);
-          if (fsChannels.length > 0) {
-            channelsStore = fsChannels.map((c) => ({
-              ...c,
-              isPremium: classifyIsPremium(c.name, c.category),
-            }));
-            console.log(`Loaded ${channelsStore.length} total channels from Firestore channel_chunks`);
-            try {
-              fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-            } catch (e) {}
-          }
-        } else {
-          // Legacy fallback
-          let channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
-          if (channelsDoc && channelsDoc.exists()) {
-            const data = channelsDoc.data();
-            if (data && Array.isArray(data.channels) && data.channels.length > 0) {
-              const fsChannels = data.channels as Channel[];
-              channelsStore = fsChannels.map((c) => ({
-                ...c,
-                isPremium: classifyIsPremium(c.name, c.category),
-              }));
-              console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
-              try {
-                fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-              } catch (e) {}
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err?.message?.includes("RESOURCE_EXHAUSTED") || err?.code === 8) {
-          firestoreQuotaExhausted = true;
-          db = null;
-        }
-        console.warn("Error loading channels from Firestore channel_chunks:", err?.message || err);
-      }
-    }
-
     // Ensure channel numbers start from 0 instead of 101
     if (channelsStore.length > 0 && channelsStore[0].channelNumber >= 101) {
       channelsStore.forEach((c, idx) => {
-        c.channelNumber = idx;
+        if (c) c.channelNumber = idx;
       });
       console.log("Re-indexed existing channels to start from 0.");
       try {
