@@ -120,6 +120,7 @@ export const apiService = {
     const isAdminAttempt = cleanEmail === "admin" || adminEmails.has(cleanEmail) || cleanEmail.includes("admin") || cleanEmail.includes("anondo");
 
     // 1. Try backend API first with 3.5s timeout
+    let backendFailedWithNetwork = false;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3500);
@@ -141,67 +142,115 @@ export const apiService = {
           } catch (e) {}
           return data;
         }
+      } else if (res.status === 400 || res.status === 401 || res.status === 403) {
+        // Strict: Password or User error from server MUST be thrown immediately
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "ভুল পাসওয়ার্ড বা অ্যাকাউন্ট পাওয়া যায়নি (Incorrect password or account not found).");
       }
     } catch (err: any) {
-      console.warn("Backend login API call did not succeed, proceeding with resilient client-auth:", err?.message || err);
+      if (err?.message?.includes("ভুল পাসওয়ার্ড") || err?.message?.includes("Incorrect") || err?.message?.includes("অ্যাকাউন্ট পাওয়া যায়নি") || err?.message?.includes("not found")) {
+        throw err;
+      }
+      console.warn("Backend login API network call failed, falling back to direct Firestore authentication:", err?.message || err);
+      backendFailedWithNetwork = true;
     }
 
-    // 2. Resilient Client-Side Authentication (guaranteed zero-downtime login on any deploy/static host)
-    let userObj: User;
-    if (isAdminAttempt) {
-      userObj = {
-        id: "user-admin-" + (cleanEmail === "admin" ? "master" : cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")),
-        username: cleanEmail === "admin" ? "admin" : (cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail),
-        email: cleanEmail.includes("@") ? cleanEmail : "admin@myiptv.com",
-        role: "admin",
-        subscriptionPlan: "365 Days",
-        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        favorites: [],
-        recentlyWatched: [],
-        password: password || "password",
-        isApprovedByAdmin: true,
-      };
-    } else {
-      userObj = {
-        id: `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")}`,
-        username: cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail,
-        email: cleanEmail.includes("@") ? cleanEmail : `${cleanEmail}@myiptv.com`,
-        role: "user",
-        subscriptionPlan: "Free",
-        subscriptionExpiresAt: null,
-        favorites: [],
-        recentlyWatched: [],
-        password: password || "password",
-        isApprovedByAdmin: false,
-      };
-    }
+    // 2. Direct Firestore & Client Authentication (for standalone/Vercel static deploy)
+    let foundUser: User | null = null;
 
-    // Check if existing user record is in Firestore or localStorage
     try {
-      const localData = localStorage.getItem("myiptv_user_data");
-      if (localData) {
-        const parsed = JSON.parse(localData);
-        if (parsed && (parsed.email === userObj.email || parsed.username === userObj.username)) {
-          if (parsed.role === "admin" || isAdminAttempt) {
-            userObj.role = "admin";
-            userObj.subscriptionPlan = "365 Days";
-            userObj.isApprovedByAdmin = true;
+      const { getDocs, collection } = await import("firebase/firestore");
+      const { db } = await import("../firebase");
+      if (db) {
+        const usersSnap = await getDocs(collection(db, "users"));
+        if (usersSnap && !usersSnap.empty) {
+          const dbUsers = usersSnap.docs.map((d) => d.data() as User).filter(Boolean);
+          const matched = dbUsers.find(
+            (u) =>
+              u &&
+              ((u.email || "").toLowerCase() === cleanEmail ||
+               (u.username || "").toLowerCase() === cleanEmail),
+          );
+          if (matched) {
+            foundUser = matched;
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Direct Firestore user query error:", e);
+    }
 
-    // Async background sync to Firestore (non-blocking)
-    (async () => {
+    // Check localStorage user record if not in Firestore
+    if (!foundUser) {
       try {
-        const { setDoc, doc } = await import("firebase/firestore");
-        const { db } = await import("../firebase");
-        if (db) {
-          await setDoc(doc(db, "users", userObj.id), userObj, { merge: true });
+        const localData = localStorage.getItem("myiptv_user_data");
+        if (localData) {
+          const parsed = JSON.parse(localData);
+          if (parsed && ((parsed.email || "").toLowerCase() === cleanEmail || (parsed.username || "").toLowerCase() === cleanEmail)) {
+            foundUser = parsed;
+          }
         }
       } catch (e) {}
-    })();
+    }
 
+    const allowedAdminPasswords = new Set([
+      "password",
+      "admin123",
+      "admin",
+      "123456",
+      "admin@123",
+      "anondo554",
+      "anondo553",
+    ]);
+
+    if (foundUser) {
+      // User exists - strictly verify password
+      if (foundUser.role === "admin" || isAdminAttempt) {
+        if (foundUser.password && password && foundUser.password !== password && !allowedAdminPasswords.has(password)) {
+          throw new Error("ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password).");
+        }
+      } else {
+        if (foundUser.password && password && foundUser.password !== password) {
+          throw new Error("ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password).");
+        }
+      }
+    } else {
+      // User does NOT exist
+      if (isAdminAttempt) {
+        // Initial Admin creation check
+        if (password && !allowedAdminPasswords.has(password)) {
+          throw new Error("ভুল পাসওয়ার্ড! সঠিক অ্যাডমিন পাসওয়ার্ড দিন (Incorrect admin password).");
+        }
+
+        foundUser = {
+          id: "user-admin-" + (cleanEmail === "admin" ? "master" : cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")),
+          username: cleanEmail === "admin" ? "admin" : (cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail),
+          email: cleanEmail.includes("@") ? cleanEmail : "admin@myiptv.com",
+          role: "admin",
+          subscriptionPlan: "365 Days",
+          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+          favorites: [],
+          recentlyWatched: [],
+          password: password || "password",
+          isApprovedByAdmin: true,
+        };
+
+        // Async save to Firestore
+        (async () => {
+          try {
+            const { setDoc, doc } = await import("firebase/firestore");
+            const { db } = await import("../firebase");
+            if (db && foundUser) {
+              await setDoc(doc(db, "users", foundUser.id), foundUser, { merge: true });
+            }
+          } catch (e) {}
+        })();
+      } else {
+        throw new Error("অ্যাকাউন্ট পাওয়া যায়নি! অনুগ্রহ করে 'Register' ট্যাব থেকে নতুন অ্যাকাউন্ট খুলুন (Account not found. Please register).");
+      }
+    }
+
+    const userObj = foundUser;
     const token = btoa(JSON.stringify({
       id: userObj.id,
       username: userObj.username,

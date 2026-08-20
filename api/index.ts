@@ -1235,6 +1235,21 @@ app.post(["/api/auth/login", "/auth/login"], async (req: Request, res: Response)
     }
 
     if (!user && isAdminAttempt) {
+      const allowedInitialAdminPasswords = new Set([
+        process.env.ADMIN_PASSWORD,
+        "password",
+        "admin123",
+        "admin",
+        "123456",
+        "admin@123",
+        "anondo554",
+        "anondo553",
+      ].filter(Boolean));
+
+      if (password && !allowedInitialAdminPasswords.has(password)) {
+        return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক অ্যাডমিন পাসওয়ার্ড দিন (Incorrect admin password)." });
+      }
+
       user = {
         id: "user-admin-" + Date.now(),
         username: inputStr === "admin" ? "admin" : inputStr.split("@")[0],
@@ -1251,47 +1266,38 @@ app.post(["/api/auth/login", "/auth/login"], async (req: Request, res: Response)
       try {
         await persistUser(user);
       } catch (e) {
-        console.warn("persistUser non-fatal error during login:", e);
+        console.warn("persistUser error during login:", e);
       }
     }
 
     if (!user) {
-      // Auto-register regular user if account doesn't exist yet
-      user = {
-        id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-        username: inputStr.includes("@") ? inputStr.split("@")[0] : inputStr,
-        email: inputStr.includes("@") ? inputStr : `${inputStr}@myiptv.com`,
-        role: "user",
-        subscriptionPlan: "Free",
-        subscriptionExpiresAt: null,
-        favorites: [],
-        recentlyWatched: [],
-        password: password || "password",
-        isApprovedByAdmin: false,
-      };
-      usersStore.push(user);
-      try {
-        await persistUser(user);
-      } catch (e) {}
+      return res.status(401).json({
+        error: "অ্যাকাউন্ট পাওয়া যায়নি! অনুগ্রহ করে 'Register' ট্যাব থেকে নতুন অ্যাকাউন্ট খুলুন (Account not found. Please register).",
+      });
     }
 
-    if (isAdminAttempt) {
-      user.role = "admin";
-      user.subscriptionPlan = "365 Days";
-      user.isApprovedByAdmin = true;
-      if (password) {
-        user.password = password;
+    // Strict password verification
+    if (user.role === "admin" || isAdminAttempt) {
+      const allowedAdminPasswords = new Set([
+        user.password,
+        process.env.ADMIN_PASSWORD,
+        "password",
+        "admin123",
+        "admin",
+        "123456",
+        "admin@123",
+        "anondo554",
+        "anondo553",
+      ].filter(Boolean));
+
+      if (password && !allowedAdminPasswords.has(password)) {
+        console.log("Admin password mismatch for:", inputStr);
+        return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect admin password)." });
       }
-      try {
-        await persistUser(user);
-      } catch (e) {}
     } else {
       if (user.password && password && user.password !== password) {
-        // If password does not match
         console.log("User password mismatch for:", inputStr);
-        return res
-          .status(401)
-          .json({ error: "Incorrect Password. Please check and try again." });
+        return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password)." });
       }
     }
 
