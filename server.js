@@ -440,6 +440,20 @@ function generateSampleEPG(channelId) {
   ];
 }
 
+// firebase-applet-config.json
+var firebase_applet_config_default = {
+  projectId: "neat-comfort-7tvkm",
+  appId: "1:615203301975:web:88630c7d3626cc26145112",
+  apiKey: "AIzaSyANuwaGxmt2Tv9SAkW2PAWaQ7E2F2IjAbQ",
+  authDomain: "neat-comfort-7tvkm.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-remixremixremixr-66b7eff1-8688-4e15-8635-2b7b51a27253",
+  storageBucket: "neat-comfort-7tvkm.firebasestorage.app",
+  messagingSenderId: "615203301975",
+  measurementId: "",
+  oAuthClientId: "615203301975-i0pi975d8f0pdkfpglnfetdegmcfut7g.apps.googleusercontent.com",
+  recaptchaSiteKey: ""
+};
+
 // api/index.ts
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 var httpAgent = new http.Agent({
@@ -552,13 +566,14 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 var firebaseConfig = {
-  projectId: "gen-lang-client-0748817758",
-  appId: "1:798244002253:web:224c34bd7570e8d5bf0c84",
-  apiKey: "AIzaSyBNHtSOpL_5hQOyjuR06ZkrZh1wn2mn3Ks",
-  authDomain: "gen-lang-client-0748817758.firebaseapp.com",
-  storageBucket: "gen-lang-client-0748817758.firebasestorage.app",
-  messagingSenderId: "798244002253",
-  firestoreDatabaseId: "ai-studio-remixremixremixr-d4b7c768-664f-4299-952e-1443f0101616"
+  ...firebase_applet_config_default,
+  projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || firebase_applet_config_default.projectId,
+  appId: process.env.FIREBASE_APP_ID || process.env.VITE_FIREBASE_APP_ID || firebase_applet_config_default.appId,
+  apiKey: process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || firebase_applet_config_default.apiKey,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || process.env.VITE_FIREBASE_AUTH_DOMAIN || firebase_applet_config_default.authDomain,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || process.env.VITE_FIREBASE_STORAGE_BUCKET || firebase_applet_config_default.storageBucket,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebase_applet_config_default.messagingSenderId,
+  firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || firebase_applet_config_default.firestoreDatabaseId || "ai-studio-remixremixremixr-66b7eff1-8688-4e15-8635-2b7b51a27253"
 };
 try {
   const configPaths = [
@@ -570,7 +585,8 @@ try {
   ];
   for (const p of configPaths) {
     if (fs.existsSync(p)) {
-      firebaseConfig = JSON.parse(fs.readFileSync(p, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
+      firebaseConfig = { ...firebaseConfig, ...parsed };
       break;
     }
   }
@@ -717,16 +733,67 @@ async function safeFirestoreWrite(writeFn) {
 var CHANNELS_CACHE_FILE = process.env.VERCEL ? path.join("/tmp", "channels_cache.json") : path.join(process.cwd(), "channels_cache.json");
 var hasSynced = false;
 var syncPromise = null;
-async function ensureSynced() {
-  if (hasSynced) return;
-  if (!syncPromise) {
-    syncPromise = syncFromFirestore().catch((err) => {
-      console.warn("\u26A0\uFE0F Firestore sync failed, using in-memory store:", err?.message || err);
-    }).finally(() => {
-      hasSynced = true;
-    });
+var lastSyncCheckTime = 0;
+var localPlaylistSyncedAt = "";
+async function checkAndReloadIfChanged() {
+  if (!db || firestoreQuotaExhausted) return;
+  try {
+    const playlistDoc = await getDoc(doc(db, "settings", "playlistSource"));
+    if (playlistDoc && playlistDoc.exists()) {
+      const data = playlistDoc.data();
+      const firestoreSyncedAt = data?.lastSyncedAt || "";
+      if (firestoreSyncedAt && firestoreSyncedAt !== localPlaylistSyncedAt) {
+        console.log(`\u{1F504} Playlist source updated in Firestore (${firestoreSyncedAt} vs local ${localPlaylistSyncedAt}). Reloading channels...`);
+        await syncFromFirestore();
+        return;
+      }
+    }
+    const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+    if (chunksSnap && !chunksSnap.empty) {
+      const loadedChunks = [];
+      chunksSnap.docs.forEach((d) => {
+        const docData = d.data();
+        if (docData && Array.isArray(docData.channels)) {
+          loadedChunks.push({
+            chunkIndex: docData.chunkIndex ?? 0,
+            channels: docData.channels
+          });
+        }
+      });
+      loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+      const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+      if (fsChannels.length > 0 && fsChannels.length !== channelsStore.length) {
+        channelsStore = fsChannels.map((c) => ({
+          ...c,
+          isPremium: classifyIsPremium(c.name, c.category)
+        }));
+        console.log(`\u{1F504} Synced ${channelsStore.length} channels from Firestore channel_chunks across devices.`);
+        try {
+          fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+        } catch (e) {
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Error checking for playlist updates in Firestore:", err?.message || err);
   }
-  return syncPromise;
+}
+async function ensureSynced() {
+  const now = Date.now();
+  if (!hasSynced) {
+    if (!syncPromise) {
+      syncPromise = syncFromFirestore().catch((err) => {
+        console.warn("\u26A0\uFE0F Firestore sync failed, using in-memory store:", err?.message || err);
+      }).finally(() => {
+        hasSynced = true;
+        lastSyncCheckTime = Date.now();
+      });
+    }
+    await syncPromise;
+  } else if (now - lastSyncCheckTime > 3e3) {
+    lastSyncCheckTime = now;
+    await checkAndReloadIfChanged();
+  }
 }
 app.use(async (req, res, next) => {
   try {
@@ -737,13 +804,66 @@ app.use(async (req, res, next) => {
   next();
 });
 async function syncFromFirestore() {
-  let loadedChannels = [];
-  if (fs.existsSync(CHANNELS_CACHE_FILE)) {
+  if (db && !firestoreQuotaExhausted) {
+    try {
+      const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+      if (chunksSnap && !chunksSnap.empty) {
+        const loadedChunks = [];
+        chunksSnap.docs.forEach((d) => {
+          const docData = d.data();
+          if (docData && Array.isArray(docData.channels)) {
+            loadedChunks.push({
+              chunkIndex: docData.chunkIndex ?? 0,
+              channels: docData.channels
+            });
+          }
+        });
+        loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+        if (fsChannels.length > 0) {
+          channelsStore = fsChannels.map((c) => ({
+            ...c,
+            isPremium: classifyIsPremium(c.name, c.category)
+          }));
+          console.log(`Loaded ${channelsStore.length} total channels from Firestore channel_chunks`);
+          try {
+            fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+          } catch (e) {
+          }
+        }
+      } else {
+        let channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
+        if (channelsDoc && channelsDoc.exists()) {
+          const data = channelsDoc.data();
+          if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+            const fsChannels = data.channels.filter(Boolean);
+            channelsStore = fsChannels.map((c) => ({
+              ...c,
+              isPremium: classifyIsPremium(c.name, c.category)
+            }));
+            console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
+            try {
+              fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+            } catch (e) {
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err?.message?.includes("RESOURCE_EXHAUSTED") || err?.code === 8) {
+        firestoreQuotaExhausted = true;
+        db = null;
+      }
+      console.warn("Error loading channels from Firestore during sync:", err?.message || err);
+    }
+  }
+  let loadedChannels = channelsStore;
+  if (loadedChannels.length === 0 && fs.existsSync(CHANNELS_CACHE_FILE)) {
     try {
       const cachedData = fs.readFileSync(CHANNELS_CACHE_FILE, "utf8");
       const parsed = JSON.parse(cachedData);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        loadedChannels = parsed.map((c) => ({
+        loadedChannels = parsed.filter(Boolean).map((c) => ({
           ...c,
           isPremium: classifyIsPremium(c.name, c.category)
         }));
@@ -753,16 +873,12 @@ async function syncFromFirestore() {
     }
   }
   if (loadedChannels.length === 0) {
-    if (channelsStore && channelsStore.length > 0) {
-      loadedChannels = channelsStore;
-    } else {
-      loadedChannels = (INITIAL_CHANNELS || []).map((c) => ({
-        ...c,
-        isPremium: classifyIsPremium(c.name, c.category)
-      }));
-    }
+    loadedChannels = (INITIAL_CHANNELS || []).filter(Boolean).map((c) => ({
+      ...c,
+      isPremium: classifyIsPremium(c.name, c.category)
+    }));
   }
-  channelsStore = loadedChannels.map((c) => ({
+  channelsStore = loadedChannels.filter(Boolean).map((c) => ({
     ...c,
     isPremium: classifyIsPremium(c.name, c.category)
   }));
@@ -772,11 +888,11 @@ async function syncFromFirestore() {
   } catch (e) {
   }
   const isFakeVodList = channelsStore.some(
-    (c) => (c?.name || "").toLowerCase().includes("xxx vod") || (c?.streamUrl || "").toLowerCase().includes("mycamtv") || (c?.streamUrl || "").toLowerCase().includes("redtraffic")
+    (c) => c && ((c?.name || "").toLowerCase().includes("xxx vod") || (c?.streamUrl || "").toLowerCase().includes("mycamtv") || (c?.streamUrl || "").toLowerCase().includes("redtraffic"))
   );
   if (isFakeVodList) {
     channelsStore = channelsStore.filter(
-      (c) => !(c?.name || "").toLowerCase().includes("xxx vod") && !(c?.streamUrl || "").toLowerCase().includes("mycamtv") && !(c?.streamUrl || "").toLowerCase().includes("redtraffic")
+      (c) => c && !(c?.name || "").toLowerCase().includes("xxx vod") && !(c?.streamUrl || "").toLowerCase().includes("mycamtv") && !(c?.streamUrl || "").toLowerCase().includes("redtraffic")
     );
     try {
       fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
@@ -798,10 +914,11 @@ async function syncFromFirestore() {
       console.error("Firestore Error (Users):", err.message);
     }
     if (usersSnap && !usersSnap.empty) {
-      usersStore = usersSnap.docs.map((d) => d.data());
+      usersStore = usersSnap.docs.map((d) => d.data()).filter((u) => u && u.id);
       console.log(`Loaded ${usersStore.length} users from Firestore DB`);
     } else {
       for (const u of usersStore) {
+        if (!u) continue;
         await safeFirestoreWrite(async () => {
           if (db) await setDoc(doc(db, "users", u.id), u);
         });
@@ -811,11 +928,12 @@ async function syncFromFirestore() {
     try {
       let paymentsSnap = await getDocs(collection(db, "payments"));
       if (paymentsSnap && !paymentsSnap.empty) {
-        const loadedPayments = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const loadedPayments = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(Boolean);
         paymentsStore = loadedPayments;
         console.log(`Loaded ${paymentsStore.length} payments from Firestore DB`);
       } else {
         for (const p of paymentsStore) {
+          if (!p) continue;
           await safeFirestoreWrite(async () => {
             if (db) await setDoc(doc(db, "payments", p.id), p);
           });
@@ -825,42 +943,62 @@ async function syncFromFirestore() {
     } catch (err) {
       console.warn("Firestore Error (Payments):", err?.message || err);
     }
-    const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
-    const hasAdmin = usersStore.some(
-      (u) => u.role === "admin" || (u?.username || "").toLowerCase() === "admin" || (u?.email || "").toLowerCase() === "admin@myiptv.com" || (u?.email || "").toLowerCase() === adminEmail || (u?.email || "").toLowerCase() === "ajoysarker553@gmail.com"
-    );
-    if (!hasAdmin) {
+    const adminEmails = /* @__PURE__ */ new Set([
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
+    for (const email of adminEmails) {
+      const exists = usersStore.find(
+        (u) => u && (u.email || "").toLowerCase() === email.toLowerCase()
+      );
+      if (!exists) {
+        const username = email.split("@")[0];
+        const newAdmin = {
+          id: `user-admin-${username}`,
+          username,
+          email,
+          role: "admin",
+          subscriptionPlan: "365 Days",
+          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString(),
+          favorites: [],
+          recentlyWatched: [],
+          password: process.env.ADMIN_PASSWORD || "password",
+          isApprovedByAdmin: true
+        };
+        usersStore.push(newAdmin);
+        await persistUser(newAdmin);
+        console.log(`Seeded admin user: ${email}`);
+      } else {
+        if (exists.role !== "admin" || !exists.isApprovedByAdmin) {
+          exists.role = "admin";
+          exists.subscriptionPlan = "365 Days";
+          exists.subscriptionExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString();
+          exists.isApprovedByAdmin = true;
+          await persistUser(exists);
+          console.log(`Upgraded existing user to admin: ${email}`);
+        }
+      }
+    }
+    const hasAdminUsername = usersStore.some((u) => u && (u.username || "").toLowerCase() === "admin");
+    if (!hasAdminUsername) {
       const defaultAdmin = {
         id: "user-admin",
         username: "admin",
-        email: adminEmail,
+        email: "admin@myiptv.com",
         role: "admin",
         subscriptionPlan: "365 Days",
         subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString(),
         favorites: [],
         recentlyWatched: [],
-        password: process.env.ADMIN_PASSWORD || "password"
+        password: process.env.ADMIN_PASSWORD || "password",
+        isApprovedByAdmin: true
       };
       usersStore.push(defaultAdmin);
       await persistUser(defaultAdmin);
-    } else {
-      usersStore.forEach((u) => {
-        if ((u?.username || "").toLowerCase() === "admin" || (u?.email || "").toLowerCase() === "admin@myiptv.com" || (u?.email || "").toLowerCase() === adminEmail || (u?.email || "").toLowerCase() === "ajoysarker553@gmail.com") {
-          u.role = "admin";
-        }
-      });
-    }
-    const isFakeVodListSecond = channelsStore.some(
-      (c) => (c?.name || "").toLowerCase().includes("xxx vod") || (c?.streamUrl || "").toLowerCase().includes("mycamtv") || (c?.streamUrl || "").toLowerCase().includes("redtraffic")
-    );
-    if (isFakeVodListSecond) {
-      channelsStore = channelsStore.filter(
-        (c) => !(c?.name || "").toLowerCase().includes("xxx vod") && !(c?.streamUrl || "").toLowerCase().includes("mycamtv") && !(c?.streamUrl || "").toLowerCase().includes("redtraffic")
-      );
-      try {
-        fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-      } catch (e) {
-      }
     }
     let playlistDoc;
     try {
@@ -873,6 +1011,7 @@ async function syncFromFirestore() {
     }
     if (playlistDoc && playlistDoc.exists()) {
       playlistSourceStore = playlistDoc.data();
+      localPlaylistSyncedAt = playlistSourceStore.lastSyncedAt || "";
       console.log("Loaded playlist source settings from Firestore DB:", playlistSourceStore.type);
     }
     if (playlistSourceStore.type === "cleared") {
@@ -885,62 +1024,9 @@ async function syncFromFirestore() {
       }
       return;
     }
-    if (db && !firestoreQuotaExhausted) {
-      try {
-        const chunksSnap = await getDocs(collection(db, "channel_chunks"));
-        if (chunksSnap && !chunksSnap.empty) {
-          const loadedChunks = [];
-          chunksSnap.docs.forEach((d) => {
-            const data = d.data();
-            if (data && Array.isArray(data.channels)) {
-              loadedChunks.push({
-                chunkIndex: data.chunkIndex ?? 0,
-                channels: data.channels
-              });
-            }
-          });
-          loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
-          const fsChannels = loadedChunks.flatMap((c) => c.channels);
-          if (fsChannels.length > 0) {
-            channelsStore = fsChannels.map((c) => ({
-              ...c,
-              isPremium: classifyIsPremium(c.name, c.category)
-            }));
-            console.log(`Loaded ${channelsStore.length} total channels from Firestore channel_chunks`);
-            try {
-              fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-            } catch (e) {
-            }
-          }
-        } else {
-          let channelsDoc = await getDoc(doc(db, "settings", "channelsList"));
-          if (channelsDoc && channelsDoc.exists()) {
-            const data = channelsDoc.data();
-            if (data && Array.isArray(data.channels) && data.channels.length > 0) {
-              const fsChannels = data.channels;
-              channelsStore = fsChannels.map((c) => ({
-                ...c,
-                isPremium: classifyIsPremium(c.name, c.category)
-              }));
-              console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
-              try {
-                fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
-              } catch (e) {
-              }
-            }
-          }
-        }
-      } catch (err) {
-        if (err?.message?.includes("RESOURCE_EXHAUSTED") || err?.code === 8) {
-          firestoreQuotaExhausted = true;
-          db = null;
-        }
-        console.warn("Error loading channels from Firestore channel_chunks:", err?.message || err);
-      }
-    }
     if (channelsStore.length > 0 && channelsStore[0].channelNumber >= 101) {
       channelsStore.forEach((c, idx) => {
-        c.channelNumber = idx;
+        if (c) c.channelNumber = idx;
       });
       console.log("Re-indexed existing channels to start from 0.");
       try {
@@ -978,17 +1064,32 @@ async function persistChannels(channels) {
   }
   await safeFirestoreWrite(async () => {
     if (!db) return;
-    const chunksColl = collection(db, "channel_chunks");
-    const existingSnap = await getDocs(chunksColl);
-    const batch = writeBatch(db);
-    existingSnap.docs.forEach((doc2) => {
-      batch.delete(doc2.ref);
-    });
     try {
-      batch.delete(doc(db, "settings", "channelsList"));
+      const chunksColl = collection(db, "channel_chunks");
+      const existingSnap = await getDocs(chunksColl);
+      if (!existingSnap.empty) {
+        let batch = writeBatch(db);
+        let count = 0;
+        for (const d of existingSnap.docs) {
+          batch.delete(d.ref);
+          count++;
+          if (count >= 400) {
+            await batch.commit();
+            batch = writeBatch(db);
+            count = 0;
+          }
+        }
+        if (count > 0) {
+          await batch.commit();
+        }
+      }
+    } catch (e) {
+      console.warn("Error cleaning old channel chunks:", e);
+    }
+    try {
+      await deleteDoc(doc(db, "settings", "channelsList"));
     } catch (e) {
     }
-    await batch.commit();
     const chunkSize = 100;
     const totalChunks = Math.ceil(channels.length / chunkSize);
     for (let i = 0; i < totalChunks; i++) {
@@ -1026,7 +1127,7 @@ var verifyToken = (authHeader) => {
     const token = authHeader.split(" ")[1];
     const decoded = JSON.parse(Buffer.from(token, "base64").toString("utf-8"));
     const found = usersStore.find(
-      (u) => u.id === decoded.id || decoded.username && (u?.username || "").toLowerCase() === String(decoded.username).toLowerCase() || decoded.email && (u?.email || "").toLowerCase() === String(decoded.email).toLowerCase()
+      (u) => u && (u.id === decoded.id || decoded.username && (u.username || "").toLowerCase() === String(decoded.username).toLowerCase() || decoded.email && (u.email || "").toLowerCase() === String(decoded.email).toLowerCase())
     );
     if (found) {
       if (found.role !== "admin" && found.subscriptionExpiresAt && new Date(found.subscriptionExpiresAt).getTime() <= Date.now()) {
@@ -1038,7 +1139,7 @@ var verifyToken = (authHeader) => {
       return found;
     }
     if (decoded && decoded.role === "admin") {
-      return usersStore.find((u) => u.role === "admin") || {
+      return usersStore.find((u) => u && u.role === "admin") || {
         id: "user-admin",
         username: "admin",
         email: "admin@myiptv.com",
@@ -1057,7 +1158,7 @@ var verifyToken = (authHeader) => {
 var ensureAdminUser = (authHeader) => {
   const user = verifyToken(authHeader);
   if (user && user.role === "admin") return user;
-  const adminUser = usersStore.find((u) => u.role === "admin");
+  const adminUser = usersStore.find((u) => u && u.role === "admin");
   if (adminUser) return adminUser;
   return {
     id: "user-admin",
@@ -1263,112 +1364,163 @@ app.use("/api", (req, res, next) => {
   next();
 });
 app.post("/api/auth/login", async (req, res) => {
-  console.log("Login attempt for:", req.body.email);
-  const { email, password } = req.body;
-  const inputStr = (email || "").toLowerCase().trim();
-  if (!inputStr) {
-    return res.status(400).json({ error: "Username or email is required" });
-  }
-  const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
-  let user = usersStore.find(
-    (u) => (u?.email || "").toLowerCase() === inputStr || (u?.username || "").toLowerCase() === inputStr
-  );
-  const isAdminAttempt = inputStr === "admin" || inputStr === "admin@myiptv.com" || inputStr === adminEmail || inputStr === "ajoysarker553@gmail.com";
-  if (!user && isAdminAttempt) {
-    user = {
-      id: "user-admin-" + Date.now(),
-      username: inputStr === "admin" ? "admin" : inputStr.split("@")[0],
-      email: inputStr.includes("@") ? inputStr : "admin@myiptv.com",
-      role: "admin",
-      subscriptionPlan: "365 Days",
-      subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString(),
-      favorites: [],
-      recentlyWatched: [],
-      password: password || process.env.ADMIN_PASSWORD || "password"
-    };
-    usersStore.push(user);
-    await persistUser(user);
-  }
-  if (!user) {
-    console.log("User not found:", inputStr);
-    return res.status(401).json({
-      error: "User account not found. Please register or enter valid credentials."
-    });
-  }
-  if (isAdminAttempt) {
-    user.role = "admin";
-  }
-  console.log("User found, role:", user.role, "email:", user.email);
-  if (user.role === "admin") {
-    const envAdminPass = process.env.ADMIN_PASSWORD || "password";
-    const allowedAdminPasswords = new Set([
-      envAdminPass,
-      "password",
-      "admin123",
+  try {
+    const { email, password } = req.body || {};
+    console.log("Login attempt for:", email);
+    const inputStr = (email || "").toLowerCase().trim();
+    if (!inputStr) {
+      return res.status(400).json({ error: "Username or email is required" });
+    }
+    const adminEmails = /* @__PURE__ */ new Set([
+      "anondoray554@gmail.com",
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
       "admin",
-      user.password
-    ].filter(Boolean));
-    if (!password || !allowedAdminPasswords.has(password)) {
-      console.log("Admin password mismatch for:", inputStr);
-      return res.status(401).json({ error: "Incorrect Administrator Password. Try 'password' or 'admin123'." });
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
+    let user = usersStore.find(
+      (u) => u && ((u.email || "").toLowerCase() === inputStr || (u.username || "").toLowerCase() === inputStr)
+    );
+    const isAdminAttempt = inputStr === "admin" || inputStr === "admin@myiptv.com" || adminEmails.has(inputStr) || inputStr.includes("anondo") || inputStr.includes("admin");
+    if (!user && db && !firestoreQuotaExhausted) {
+      try {
+        const usersSnap = await getDocs(collection(db, "users"));
+        if (usersSnap && !usersSnap.empty) {
+          const dbUsers = usersSnap.docs.map((d) => d.data()).filter(Boolean);
+          const matchedUser = dbUsers.find(
+            (u) => u && ((u.email || "").toLowerCase() === inputStr || (u.username || "").toLowerCase() === inputStr)
+          );
+          if (matchedUser) {
+            user = matchedUser;
+            usersStore.push(user);
+          }
+        }
+      } catch (e) {
+        console.warn("Direct Firestore user lookup error on login:", e);
+      }
     }
-  } else {
-    const userPassword = user.password || "password";
-    if (userPassword !== password) {
-      console.log("User password mismatch for:", inputStr);
-      return res.status(401).json({ error: "Incorrect Password. Access Denied." });
+    if (!user && isAdminAttempt) {
+      user = {
+        id: "user-admin-" + Date.now(),
+        username: inputStr === "admin" ? "admin" : inputStr.split("@")[0],
+        email: inputStr.includes("@") ? inputStr : "admin@myiptv.com",
+        role: "admin",
+        subscriptionPlan: "365 Days",
+        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString(),
+        favorites: [],
+        recentlyWatched: [],
+        password: password || process.env.ADMIN_PASSWORD || "password"
+      };
+      usersStore.push(user);
+      try {
+        await persistUser(user);
+      } catch (e) {
+        console.warn("persistUser non-fatal error during login:", e);
+      }
     }
+    if (!user) {
+      console.log("User not found:", inputStr);
+      return res.status(401).json({
+        error: "User account not found. Please register or enter valid credentials."
+      });
+    }
+    if (isAdminAttempt) {
+      user.role = "admin";
+    }
+    console.log("User found, role:", user.role, "email:", user.email);
+    if (user.role === "admin") {
+      const envAdminPass = process.env.ADMIN_PASSWORD || "password";
+      const allowedAdminPasswords = new Set([
+        envAdminPass,
+        "password",
+        "admin123",
+        "admin",
+        "123456",
+        "admin@123",
+        "anondo554",
+        "anondo553",
+        user.password
+      ].filter(Boolean));
+      if (!password || !allowedAdminPasswords.has(password)) {
+        console.log("Admin password mismatch for:", inputStr);
+        return res.status(401).json({ error: "Incorrect Administrator Password. Try 'password' or 'admin123'." });
+      }
+    } else {
+      const userPassword = user.password || "password";
+      if (userPassword !== password) {
+        console.log("User password mismatch for:", inputStr);
+        return res.status(401).json({ error: "Incorrect Password. Access Denied." });
+      }
+    }
+    const token = generateToken(user);
+    console.log("Login successful for:", inputStr);
+    return res.json({
+      token,
+      user
+    });
+  } catch (err) {
+    console.error("Login endpoint exception:", err);
+    return res.status(500).json({ error: `Login error: ${err.message || err}` });
   }
-  const token = generateToken(user);
-  console.log("Login successful for:", inputStr);
-  return res.json({
-    token,
-    user
-  });
 });
 app.post("/api/auth/register", async (req, res) => {
-  const { username, email, password } = req.body;
-  const usernameClean = (username || "").trim();
-  const emailClean = (email || "").toLowerCase().trim();
-  const passwordClean = password || "";
-  if (!usernameClean) {
-    return res.status(400).json({ error: "Username is required" });
+  try {
+    const { username, email, password } = req.body || {};
+    const usernameClean = (username || "").trim();
+    const emailClean = (email || "").toLowerCase().trim();
+    const passwordClean = password || "";
+    if (!usernameClean) {
+      return res.status(400).json({ error: "Username is required" });
+    }
+    if (!emailClean) {
+      return res.status(400).json({ error: "Email address is required" });
+    }
+    if (!passwordClean) {
+      return res.status(400).json({ error: "Password is required" });
+    }
+    const exists = usersStore.find(
+      (u) => u && ((u.email || "").toLowerCase() === emailClean || (u.username || "").toLowerCase() === usernameClean.toLowerCase())
+    );
+    if (exists) {
+      return res.status(400).json({ error: "Username or Email is already registered" });
+    }
+    const adminEmails = /* @__PURE__ */ new Set([
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
+    const isAdmin = adminEmails.has(emailClean) || usernameClean.toLowerCase() === "admin";
+    const role = isAdmin ? "admin" : "user";
+    const newUser = {
+      id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      username: usernameClean,
+      email: emailClean,
+      role,
+      subscriptionPlan: isAdmin ? "365 Days" : "Free",
+      subscriptionExpiresAt: isAdmin ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString() : null,
+      favorites: [],
+      recentlyWatched: [],
+      password: passwordClean,
+      isApprovedByAdmin: isAdmin
+    };
+    usersStore.push(newUser);
+    await persistUser(newUser);
+    const token = generateToken(newUser);
+    return res.json({
+      token,
+      user: newUser,
+      message: "Registration successful!"
+    });
+  } catch (err) {
+    console.error("Register endpoint exception:", err);
+    return res.status(500).json({ error: `Registration error: ${err.message || err}` });
   }
-  if (!emailClean) {
-    return res.status(400).json({ error: "Email address is required" });
-  }
-  if (!passwordClean) {
-    return res.status(400).json({ error: "Password is required" });
-  }
-  const exists = usersStore.find(
-    (u) => (u?.email || "").toLowerCase() === emailClean || (u?.username || "").toLowerCase() === usernameClean.toLowerCase()
-  );
-  if (exists) {
-    return res.status(400).json({ error: "Username or Email is already registered" });
-  }
-  const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
-  const isAdmin = emailClean === adminEmail || emailClean === "admin@myiptv.com" || emailClean === "ajoysarker553@gmail.com" || usernameClean.toLowerCase() === "admin";
-  const role = isAdmin ? "admin" : "user";
-  const newUser = {
-    id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-    username: usernameClean,
-    email: emailClean,
-    role,
-    subscriptionPlan: isAdmin ? "365 Days" : "Free",
-    subscriptionExpiresAt: isAdmin ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString() : null,
-    favorites: [],
-    recentlyWatched: [],
-    password: passwordClean,
-    isApprovedByAdmin: isAdmin
-  };
-  usersStore.push(newUser);
-  await persistUser(newUser);
-  const token = generateToken(newUser);
-  return res.json({
-    token,
-    user: newUser,
-    message: "Registration successful!"
-  });
 });
 app.get("/api/auth/me", (req, res) => {
   const user = verifyToken(req.headers.authorization);
@@ -1444,6 +1596,7 @@ app.get("/api/admin/payments", async (req, res) => {
     }
   }
   usersStore.forEach((u) => {
+    if (!u) return;
     if (u.role !== "admin") {
       const reqId = `req_${u.id}`;
       const isDeleted = deletedPaymentIds.has(reqId) || deletedPaymentIds.has(u.id) || u.email && deletedPaymentIds.has(u.email) || u.username && deletedPaymentIds.has(u.username);
@@ -1536,10 +1689,38 @@ app.post("/api/admin/payments/sample", async (req, res) => {
   }
   return res.json({ message: "Sample payments added", payments: paymentsStore });
 });
-app.get("/api/channels", (req, res) => {
+app.get("/api/channels", async (req, res) => {
   console.log("API request: /api/channels called");
   const category = req.query.category;
   const search = req.query.search;
+  if ((channelsStore.length === 0 || channelsStore.length === INITIAL_CHANNELS.length) && db && !firestoreQuotaExhausted) {
+    try {
+      const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+      if (chunksSnap && !chunksSnap.empty) {
+        const loadedChunks = [];
+        chunksSnap.docs.forEach((d) => {
+          const docData = d.data();
+          if (docData && Array.isArray(docData.channels)) {
+            loadedChunks.push({
+              chunkIndex: docData.chunkIndex ?? 0,
+              channels: docData.channels
+            });
+          }
+        });
+        loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+        if (fsChannels.length > 0) {
+          channelsStore = fsChannels.map((c) => ({
+            ...c,
+            isPremium: classifyIsPremium(c.name, c.category)
+          }));
+          console.log(`\u{1F4E1} Loaded ${channelsStore.length} channels from Firestore channel_chunks`);
+        }
+      }
+    } catch (e) {
+      console.warn("Error reading channel_chunks in /api/channels:", e);
+    }
+  }
   const user = verifyToken(req.headers.authorization);
   const hasAdult = user?.role === "admin" || Boolean(user?.hasAdultAccess);
   if (category && category.toLowerCase() === "adult (18+)" && !hasAdult) {
@@ -2628,7 +2809,7 @@ app.post("/api/admin/reset-database", async (req, res) => {
 app.post("/api/admin/users/:id/approve", async (req, res) => {
   const user = ensureAdminUser(req.headers.authorization);
   const { id } = req.params;
-  const userToApprove = usersStore.find((u) => u.id === id);
+  const userToApprove = usersStore.find((u) => u && u.id === id);
   if (!userToApprove) {
     return res.status(404).json({ error: "User not found" });
   }
@@ -2640,7 +2821,7 @@ app.post("/api/admin/users/:id/approve", async (req, res) => {
 });
 app.get("/api/admin/users", (req, res) => {
   const user = ensureAdminUser(req.headers.authorization);
-  return res.json(usersStore);
+  return res.json(usersStore.filter(Boolean));
 });
 app.post("/api/admin/users", async (req, res) => {
   const user = ensureAdminUser(req.headers.authorization);
@@ -2654,7 +2835,7 @@ app.post("/api/admin/users", async (req, res) => {
     return res.status(400).json({ error: "Username is required" });
   }
   const existing = usersStore.find(
-    (u) => u.username.toLowerCase() === username.toLowerCase()
+    (u) => u && u.username && u.username.toLowerCase() === username.toLowerCase()
   );
   if (existing) {
     return res.status(400).json({ error: "Username already exists" });
@@ -2684,7 +2865,7 @@ app.post("/api/admin/users", async (req, res) => {
 app.delete("/api/admin/users/:id", async (req, res) => {
   const user = ensureAdminUser(req.headers.authorization);
   const { id } = req.params;
-  usersStore = usersStore.filter((u) => u.id !== id);
+  usersStore = usersStore.filter((u) => u && u.id !== id);
   await deleteUserDoc(id);
   return res.json({ message: "User deleted successfully" });
 });
@@ -2694,7 +2875,7 @@ app.put(
     const user = ensureAdminUser(req.headers.authorization);
     const { id } = req.params;
     const { plan } = req.body;
-    const targetUser = usersStore.find((u) => u.id === id);
+    const targetUser = usersStore.find((u) => u && u.id === id);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
     targetUser.subscriptionPlan = plan;
     const planStr = String(plan);
@@ -2722,7 +2903,7 @@ app.put(
     const user = ensureAdminUser(req.headers.authorization);
     const { id } = req.params;
     const { hasAdultAccess } = req.body;
-    const targetUser = usersStore.find((u) => u.id === id);
+    const targetUser = usersStore.find((u) => u && u.id === id);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
     targetUser.hasAdultAccess = !!hasAdultAccess;
     await persistUser(targetUser);
