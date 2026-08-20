@@ -508,6 +508,35 @@ async function syncFromFirestore() {
         }
 
         if (channelsStore.length === 0) {
+          // Check individual channels collection
+          const chSnap = await withTimeout(getDocs(collection(db, "channels")), 2500, null);
+          if (chSnap && !chSnap.empty) {
+            const fsChannels: Channel[] = [];
+            chSnap.docs.forEach((d, idx) => {
+              const data = d.data();
+              if (data && data.name) {
+                fsChannels.push({
+                  id: d.id || data.id || `ch_${idx}`,
+                  name: data.name,
+                  category: data.category || "Entertainment",
+                  logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+                  streamUrl: data.streamUrl || "",
+                  channelNumber: data.channelNumber ?? idx,
+                  isPremium: data.isPremium ?? classifyIsPremium(data.name, data.category || ""),
+                  isActive: data.isActive !== false,
+                });
+              }
+            });
+            if (fsChannels.length > 0) {
+              channelsStore = fsChannels;
+              try {
+                fs.writeFileSync(CHANNELS_CACHE_FILE, JSON.stringify(channelsStore));
+              } catch (e) {}
+            }
+          }
+        }
+
+        if (channelsStore.length === 0) {
           // Legacy fallback
           let channelsDoc = await withTimeout(getDoc(doc(db, "settings", "channelsList")), 2500, null);
           if (channelsDoc && channelsDoc.exists()) {
@@ -517,6 +546,7 @@ async function syncFromFirestore() {
               channelsStore = fsChannels.map((c) => ({
                 ...c,
                 isPremium: classifyIsPremium(c.name, c.category),
+                isActive: c.isActive !== false,
               }));
               console.log(`Loaded ${channelsStore.length} total channels from Firestore settings/channelsList`);
               try {
@@ -1568,7 +1598,7 @@ app.get("/api/channels", async (req: Request, res: Response) => {
   const category = req.query.category as string;
   const search = req.query.search as string;
 
-  // Auto-sync channels from Firestore channel_chunks if in-memory list is empty or uninitialized
+  // Auto-sync channels from Firestore if in-memory list is empty or uninitialized
   if ((channelsStore.length === 0 || channelsStore.length === INITIAL_CHANNELS.length) && db && !firestoreQuotaExhausted) {
     try {
       const chunksSnap = await getDocs(collection(db, "channel_chunks"));
@@ -1589,12 +1619,37 @@ app.get("/api/channels", async (req: Request, res: Response) => {
           channelsStore = fsChannels.map((c) => ({
             ...c,
             isPremium: classifyIsPremium(c.name, c.category),
+            isActive: c.isActive !== false,
           }));
           console.log(`📡 Loaded ${channelsStore.length} channels from Firestore channel_chunks`);
         }
+      } else {
+        // Fallback to individual channels collection
+        const chSnap = await getDocs(collection(db, "channels"));
+        if (chSnap && !chSnap.empty) {
+          const rawList: Channel[] = [];
+          chSnap.docs.forEach((d, idx) => {
+            const data = d.data();
+            if (data && data.name) {
+              rawList.push({
+                id: d.id || data.id || `ch_${idx}`,
+                name: data.name,
+                category: data.category || "Entertainment",
+                logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+                streamUrl: data.streamUrl || "",
+                channelNumber: data.channelNumber ?? idx,
+                isPremium: data.isPremium ?? classifyIsPremium(data.name, data.category || ""),
+                isActive: data.isActive !== false,
+              });
+            }
+          });
+          if (rawList.length > 0) {
+            channelsStore = rawList;
+          }
+        }
       }
     } catch (e) {
-      console.warn("Error reading channel_chunks in /api/channels:", e);
+      console.warn("Error reading channels from Firestore in /api/channels:", e);
     }
   }
 
@@ -1605,7 +1660,7 @@ app.get("/api/channels", async (req: Request, res: Response) => {
     return res.status(403).json({ error: "Adult content restricted. Admin permission required." });
   }
 
-  let result = channelsStore.filter((c) => c.isActive);
+  let result = channelsStore.filter((c) => c.isActive !== false);
   if (!hasAdult) {
     result = result.filter((c) => !isAdultContent(c.name, c.category) && c.category.toLowerCase() !== "adult (18+)");
   }

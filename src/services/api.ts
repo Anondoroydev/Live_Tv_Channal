@@ -398,9 +398,10 @@ export const apiService = {
 
       if (isDefaultFallback) {
         try {
-          const { getDocs, collection, query, orderBy } = await import("firebase/firestore");
+          const { getDocs, collection, query, orderBy, doc, getDoc } = await import("firebase/firestore");
           const { db } = await import("../firebase");
           if (db) {
+            // 1. Try channel_chunks
             const chunksSnap = await getDocs(collection(db, "channel_chunks"));
             if (chunksSnap && !chunksSnap.empty) {
               const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
@@ -417,12 +418,11 @@ export const apiService = {
               const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
               if (fsChannels.length > 0) {
                 finalChannels = fsChannels;
-                try {
-                  localStorage.setItem("myiptv_custom_channels", JSON.stringify(finalChannels));
-                } catch (e) {}
               }
-            } else {
-              // Check playlists collection fallback
+            }
+            
+            // 2. Try playlists collection
+            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
               const plSnap = await getDocs(query(collection(db, "playlists"), orderBy("createdAt", "desc")));
               if (plSnap && !plSnap.empty) {
                 for (const plDoc of plSnap.docs) {
@@ -438,12 +438,58 @@ export const apiService = {
                 }
               }
             }
+
+            // 3. Try channels collection
+            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
+              const channelsSnap = await getDocs(collection(db, "channels"));
+              if (channelsSnap && !channelsSnap.empty) {
+                const rawList: Channel[] = [];
+                channelsSnap.docs.forEach((d, idx) => {
+                  const data = d.data();
+                  if (data && data.name) {
+                    rawList.push({
+                      id: d.id || data.id || `ch_${idx}`,
+                      name: data.name,
+                      category: data.category || "Entertainment",
+                      logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+                      streamUrl: data.streamUrl || "",
+                      channelNumber: data.channelNumber ?? idx,
+                      isPremium: data.isPremium ?? false,
+                      isActive: data.isActive !== false,
+                    });
+                  }
+                });
+                if (rawList.length > 0) {
+                  finalChannels = rawList;
+                }
+              }
+            }
+
+            // 4. Try settings/channelsList
+            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
+              const chListDoc = await getDoc(doc(db, "settings", "channelsList"));
+              if (chListDoc && chListDoc.exists()) {
+                const data = chListDoc.data();
+                if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+                  finalChannels = data.channels.filter(Boolean);
+                }
+              }
+            }
+
+            if (finalChannels.length > 0 && finalChannels.length !== INITIAL_CHANNELS.length) {
+              try {
+                localStorage.setItem("myiptv_custom_channels", JSON.stringify(finalChannels));
+              } catch (e) {}
+            }
           }
         } catch (err) {}
       }
 
       if ((!finalChannels || finalChannels.length === 0) && (!channelsCache || channelsCache.length === 0)) {
-        finalChannels = INITIAL_CHANNELS as Channel[];
+        finalChannels = getStoredChannelsFallback();
+        if (finalChannels.length === 0) {
+          finalChannels = INITIAL_CHANNELS as Channel[];
+        }
       }
 
       if (!category && !search) {
@@ -499,6 +545,31 @@ export const apiService = {
                     list = parsed.channels;
                     break;
                   }
+                }
+              }
+            }
+
+            if (list.length === 0) {
+              const channelsSnap = await getDocs(collection(db, "channels"));
+              if (channelsSnap && !channelsSnap.empty) {
+                const rawList: Channel[] = [];
+                channelsSnap.docs.forEach((d, idx) => {
+                  const data = d.data();
+                  if (data && data.name) {
+                    rawList.push({
+                      id: d.id || data.id || `ch_${idx}`,
+                      name: data.name,
+                      category: data.category || "Entertainment",
+                      logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+                      streamUrl: data.streamUrl || "",
+                      channelNumber: data.channelNumber ?? idx,
+                      isPremium: data.isPremium ?? false,
+                      isActive: data.isActive !== false,
+                    });
+                  }
+                });
+                if (rawList.length > 0) {
+                  list = rawList;
                 }
               }
             }

@@ -230,8 +230,11 @@ export default function App() {
       } else {
         setChannels([]);
       }
-      const catsArray = Array.isArray(cats) ? cats : (cats && Array.isArray((cats as any).categories)) ? (cats as any).categories : ["All", "Sports", "Bangla", "India", "Entertainment", "Kids", "News", "Series / VOD", "Music"];
-      setCategories(catsArray);
+      
+      const serverCats = Array.isArray(cats) ? cats : (cats && Array.isArray((cats as any).categories)) ? (cats as any).categories : [];
+      const extractedCats = Array.from(new Set((chs || []).map((c) => c.category).filter(Boolean)));
+      const combinedCats = Array.from(new Set(["All", ...serverCats.filter((c: string) => c !== "All"), ...extractedCats]));
+      setCategories(combinedCats.length > 1 ? combinedCats : ["All", "Sports", "Bangla", "India", "Entertainment", "Kids", "News", "Series / VOD", "Music"]);
 
       if (user) {
         setCurrentUser(user);
@@ -335,7 +338,7 @@ export default function App() {
   );
 
   // Filter channels based on View, Category & Search (Show all channels so free users see VIP lock badges)
-  let filteredChannels = channels.filter((c) => c.isActive);
+  let filteredChannels = channels.filter((c) => c.isActive !== false);
 
   // Handle Series / VOD view specifically - do NOT show regular TV channels here!
   if (currentView === "series" || selectedCategory === "Series" || selectedCategory === "Series / VOD") {
@@ -367,11 +370,14 @@ export default function App() {
       );
     });
   } else if (currentView === "livetv" && selectedCategory === "All") {
-    // Hide VODs and Series from Live TV "All" view to prevent clutter
-    filteredChannels = filteredChannels.filter((c) => {
+    // Hide VODs and Series from Live TV "All" view to prevent clutter only if other channels exist
+    const nonVod = filteredChannels.filter((c) => {
       const cat = (c.category || "").toLowerCase();
       return !(cat.includes("vod") || cat.includes("movie") || cat.includes("cinema") || cat.includes("series") || cat.includes("season"));
     });
+    if (nonVod.length > 0) {
+      filteredChannels = nonVod;
+    }
   } else if (selectedCategory === "Watchlist") {
     filteredChannels = filteredChannels.filter((c) => favorites.includes(c.id));
   } else if (selectedCategory === "History") {
@@ -461,7 +467,7 @@ export default function App() {
           const targetNum = parseInt(currentInput, 10);
           numberBufferRef.current = "";
           if (!isNaN(targetNum)) {
-            const matched = channels.find((c) => c.channelNumber === targetNum && c.isActive);
+            const matched = channels.find((c) => c.channelNumber === targetNum && c.isActive !== false);
             if (matched) {
               handleSelectChannel(matched);
             }
