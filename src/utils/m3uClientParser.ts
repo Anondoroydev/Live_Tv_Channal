@@ -289,16 +289,21 @@ export async function saveChannelsDirect(
       const chunksColl = collection(db, "channel_chunks");
       const existingSnap = await getDocs(chunksColl);
       const batch = writeBatch(db);
+      let opCount = 0;
       
       existingSnap.docs.forEach((doc) => {
         batch.delete(doc.ref);
+        opCount++;
       });
       
       try {
         batch.delete(doc(db, "settings", "channelsList"));
+        opCount++;
       } catch (e) {}
       
-      await batch.commit();
+      if (opCount > 0) {
+        await batch.commit();
+      }
 
       // Persist channels in chunks of 100
       const chunkSize = 100;
