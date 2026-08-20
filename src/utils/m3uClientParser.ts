@@ -98,48 +98,87 @@ export function parseM3UClient(
   const categoriesSet = new Set<string>();
 
   const seenUrls = new Set<string>();
+  const seenNames = new Set<string>();
   let currentChannel: Partial<Channel> | null = null;
   let autoNumber = 0;
+  let customUserAgent = "";
+  let customReferer = "";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.startsWith("#EXTM3U")) continue;
 
     if (line.startsWith("#EXTINF:")) {
-      let tvgName = "";
-      let tvgLogo = "";
-      let groupTitle = "Entertainment";
-      let channelNumber: number | undefined;
+      currentChannel = { isActive: true };
 
-      const tvgNameMatch = line.match(/tvg-name="([^"]+)"/i) || line.match(/tvg-name=([^\s,]+)/i);
-      if (tvgNameMatch) tvgName = tvgNameMatch[1].trim();
+      const infContent = line.substring(8);
 
-      const tvgLogoMatch = line.match(/tvg-logo="([^"]+)"/i) || line.match(/tvg-logo=([^\s,]+)/i);
-      if (tvgLogoMatch) tvgLogo = tvgLogoMatch[1].trim();
+      // Extract logo (tvg-logo, logo, icon with double quotes, single quotes, or unquoted)
+      const logoMatch = /(?:tvg-logo|logo|icon)=["']?([^"'\s>]+)["']?/i.exec(infContent);
+      if (logoMatch) currentChannel.logo = logoMatch[1];
 
-      const groupMatch = line.match(/group-title="([^"]+)"/i) || line.match(/group-title=([^\s,]+)/i);
-      if (groupMatch) groupTitle = groupMatch[1].trim();
+      // Extract group-title / group
+      const groupMatch = /(?:group-title|group)=["']?([^"']+)["']?/i.exec(infContent);
+      let cat = (groupMatch && groupMatch[1].trim()) || "Entertainment";
+      currentChannel.category = cat;
+      categoriesSet.add(cat);
 
-      const tvgChnoMatch = line.match(/tvg-chno="?(\d+)"?/i) || line.match(/channel-id="?(\d+)"?/i);
-      if (tvgChnoMatch) channelNumber = parseInt(tvgChnoMatch[1], 10);
+      // Extract tvg-id
+      const tvgIdMatch = /(?:tvg-id|channel-id)=["']?([^"']+)["']?/i.exec(infContent);
+      if (tvgIdMatch) currentChannel.tvgId = tvgIdMatch[1];
 
-      const commaIndex = line.lastIndexOf(",");
-      let rawDisplayName = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : "";
-      rawDisplayName = rawDisplayName.replace(/\r/g, "").trim();
+      // Extract channel number
+      const chnoMatch = /(?:tvg-chno|chno)=["']?(\d+)["']?/i.exec(infContent);
+      if (chnoMatch) currentChannel.channelNumber = parseInt(chnoMatch[1], 10);
 
-      const finalName = rawDisplayName || tvgName || `Channel ${autoNumber + 1}`;
-      if (!groupTitle || groupTitle === "Undefined" || groupTitle === "Unknown") {
-        groupTitle = "Entertainment";
+      // Extract display name after comma
+      let inDoubleQuotes = false;
+      let inSingleQuotes = false;
+      let commaIdx = -1;
+
+      for (let j = 0; j < infContent.length; j++) {
+        const char = infContent[j];
+        if (char === '"' && !inSingleQuotes) inDoubleQuotes = !inDoubleQuotes;
+        else if (char === "'" && !inDoubleQuotes) inSingleQuotes = !inSingleQuotes;
+        else if (char === "," && !inDoubleQuotes && !inSingleQuotes) {
+          commaIdx = j;
+          break;
+        }
       }
 
-      currentChannel = {
-        name: finalName,
-        logo: tvgLogo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
-        category: groupTitle,
-        channelNumber: channelNumber !== undefined ? channelNumber : autoNumber,
-        isPremium: classifyIsPremium(finalName, groupTitle),
-        isActive: true,
-      };
+      if (commaIdx !== -1) {
+        const nameAndUrl = infContent.substring(commaIdx + 1).trim();
+        // Check if stream URL is accidentally on the same line
+        const urlMatch = /(https?:\/\/[^\s]+|rtmp:\/\/[^\s]+|rtsp:\/\/[^\s]+)/i.exec(nameAndUrl);
+        if (urlMatch) {
+          currentChannel.streamUrl = urlMatch[1];
+          currentChannel.name = nameAndUrl.replace(urlMatch[1], "").trim() || `Channel ${autoNumber + 1}`;
+        } else {
+          currentChannel.name = nameAndUrl || `Channel ${autoNumber + 1}`;
+        }
+      } else {
+        const tvgNameMatch = /(?:tvg-name)=["']?([^"',]+)["']?/i.exec(infContent);
+        currentChannel.name = (tvgNameMatch && tvgNameMatch[1].trim()) || `Channel ${autoNumber + 1}`;
+      }
+
+      if (currentChannel.streamUrl) {
+        pushChannelItem(currentChannel);
+        currentChannel = null;
+        customUserAgent = "";
+        customReferer = "";
+      }
+    } else if (line.startsWith("#EXTVLCOPT:")) {
+      if (line.toLowerCase().includes("http-user-agent=")) {
+        customUserAgent = line.split("=")[1]?.trim() || "";
+      } else if (line.toLowerCase().includes("http-referrer=")) {
+        customReferer = line.split("=")[1]?.trim() || "";
+      }
+    } else if (line.startsWith("#EXTGRP:")) {
+      const cat = line.substring(8).trim() || "Entertainment";
+      if (currentChannel) {
+        currentChannel.category = cat;
+        categoriesSet.add(cat);
+      }
     } else if (!line.startsWith("#")) {
       let streamUrl = line;
       if (baseUrl && !streamUrl.startsWith("http://") && !streamUrl.startsWith("https://")) {
@@ -152,31 +191,102 @@ export function parseM3UClient(
         streamUrl.startsWith("http://") ||
         streamUrl.startsWith("https://") ||
         streamUrl.startsWith("rtmp://") ||
-        streamUrl.startsWith("rtsp://")
+        streamUrl.startsWith("rtsp://") ||
+        /\.(m3u8|m3u|ts|mp4|mkv|flv|avi|mov|webm)(\?.*)?$/i.test(streamUrl) ||
+        /\/live\/|\/play\/|\/stream\/|\/get\.php/i.test(streamUrl)
       ) {
-        if (!seenUrls.has(streamUrl)) {
-          seenUrls.add(streamUrl);
-          const chName = currentChannel?.name || `Live Stream ${autoNumber + 1}`;
-          const chCat = currentChannel?.category || "Entertainment";
+        if (!streamUrl.includes("|")) {
+          const headerParts = [];
+          if (customUserAgent) headerParts.push(`User-Agent=${encodeURIComponent(customUserAgent)}`);
+          if (customReferer) headerParts.push(`Referer=${encodeURIComponent(customReferer)}`);
+          if (headerParts.length > 0) {
+            streamUrl += "|" + headerParts.join("&");
+          }
+        }
 
-          const fullChannel: Channel = {
-            id: `ch-m3u-${autoNumber}-${Date.now()}`,
-            name: chName,
-            logo: currentChannel?.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
-            category: chCat,
-            channelNumber: currentChannel?.channelNumber !== undefined ? currentChannel.channelNumber : autoNumber,
-            streamUrl: streamUrl,
-            isPremium: classifyIsPremium(chName, chCat),
+        if (!currentChannel) {
+          currentChannel = {
+            name: `Channel ${autoNumber + 1}`,
+            category: "Entertainment",
             isActive: true,
           };
-
-          parsedChannels.push(fullChannel);
-          categoriesSet.add(chCat);
-          autoNumber++;
         }
+
+        currentChannel.streamUrl = streamUrl;
+        pushChannelItem(currentChannel);
+        currentChannel = null;
+        customUserAgent = "";
+        customReferer = "";
       }
-      currentChannel = null;
     }
+  }
+
+  // Fallback: If 0 channels were parsed, parse any line containing http:// or https:// as a channel URL
+  if (parsedChannels.length === 0) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("http://") || line.startsWith("https://")) {
+        autoNumber++;
+        let name = `Channel ${autoNumber}`;
+        try {
+          const urlObj = new URL(line);
+          const pathSegments = urlObj.pathname.split("/").filter(Boolean);
+          if (pathSegments.length > 0) {
+            const seg = pathSegments[pathSegments.length - 1];
+            name = seg.replace(/\.(m3u8|ts|mp4|mkv)$/i, "").replace(/[-_]/g, " ");
+          }
+        } catch (e) {}
+
+        const chName = name.charAt(0).toUpperCase() + name.slice(1);
+        parsedChannels.push({
+          id: `ch-m3u-${autoNumber}-${Date.now()}`,
+          name: chName,
+          category: "Entertainment",
+          channelNumber: parsedChannels.length,
+          streamUrl: line,
+          logo: "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+          isPremium: classifyIsPremium(chName, "Entertainment"),
+          isActive: true,
+        });
+        categoriesSet.add("Entertainment");
+      }
+    }
+  }
+
+  function pushChannelItem(ch: Partial<Channel>) {
+    const chName = ch.name || `Channel ${autoNumber + 1}`;
+    let category = ch.category || "Entertainment";
+    const streamUrl = ch.streamUrl || "";
+    if (!streamUrl) return;
+
+    const lowerName = chName.toLowerCase();
+    const cleanUrl = streamUrl.split("|")[0].toLowerCase();
+
+    // Adult content tag handling
+    if (isAdultContent(chName, category)) {
+      category = "Adult (18+)";
+      categoriesSet.add("Adult (18+)");
+    }
+
+    if (seenUrls.has(cleanUrl)) return;
+    seenUrls.add(cleanUrl);
+    seenNames.add(lowerName);
+
+    const fullChannel: Channel = {
+      id: `ch-m3u-${autoNumber + 1}-${Math.random().toString(36).substring(2, 7)}`,
+      name: chName,
+      logo: ch.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+      category: category,
+      channelNumber: ch.channelNumber !== undefined ? ch.channelNumber : autoNumber,
+      streamUrl: streamUrl,
+      isPremium: classifyIsPremium(chName, category),
+      isActive: true,
+      tvgId: ch.tvgId,
+    };
+
+    parsedChannels.push(fullChannel);
+    categoriesSet.add(category);
+    autoNumber++;
   }
 
   return {
@@ -204,8 +314,8 @@ export function getStoredChannelsDirect(): Channel[] {
     const local = localStorage.getItem("myiptv_custom_channels");
     if (local !== null) {
       const parsed = JSON.parse(local);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name));
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.filter((c) => c && !deletedIds.has(c.id) && !deletedIds.has(c.name));
       }
     }
 
@@ -283,9 +393,9 @@ export async function saveChannelsDirect(
 
   try {
     if (db) {
-      const { doc, setDoc, getDocs, collection, writeBatch } = await import("firebase/firestore");
-      
-      // Delete existing chunks and fallback legacy doc safely with batch limit <= 400
+      const { doc, setDoc, getDocs, collection, writeBatch, deleteDoc } = await import("firebase/firestore");
+
+      // Delete old channel chunks
       try {
         const chunksColl = collection(db, "channel_chunks");
         const existingSnap = await getDocs(chunksColl);
@@ -308,26 +418,33 @@ export async function saveChannelsDirect(
       } catch (e) {
         console.warn("Error cleaning old channel chunks in client:", e);
       }
-      
+
       try {
-        const { deleteDoc } = await import("firebase/firestore");
         await deleteDoc(doc(db, "settings", "channelsList"));
       } catch (e) {}
 
-      // Persist channels in chunks of 100
+      // Persist channels in chunks of 100 in parallel batches of 8
       const chunkSize = 100;
       const totalChunks = Math.ceil(channels.length / chunkSize);
-      
+      const chunkTasks: Promise<void>[] = [];
+
       for (let i = 0; i < totalChunks; i++) {
         const start = i * chunkSize;
         const end = start + chunkSize;
         const chunkChannels = channels.slice(start, end);
-        
-        await setDoc(doc(db, "channel_chunks", `chunk_${i}`), {
-          chunkIndex: i,
-          channels: chunkChannels,
-          updatedAt: new Date().toISOString(),
-        });
+
+        chunkTasks.push(
+          setDoc(doc(db, "channel_chunks", `chunk_${i}`), {
+            chunkIndex: i,
+            channels: chunkChannels,
+            updatedAt: new Date().toISOString(),
+          }),
+        );
+      }
+
+      // Execute chunk writes in batches
+      for (let i = 0; i < chunkTasks.length; i += 8) {
+        await Promise.all(chunkTasks.slice(i, i + 8));
       }
 
       await setDoc(doc(db, "settings", "playlistSource"), {
@@ -335,6 +452,12 @@ export async function saveChannelsDirect(
         url: sourceUrl,
         lastSyncedAt: new Date().toISOString(),
         totalChannels: channels.length,
+      });
+
+      await setDoc(doc(db, "settings", "channelsMeta"), {
+        totalChannels: channels.length,
+        totalChunks,
+        lastSyncedAt: new Date().toISOString(),
       });
     }
   } catch (e) {

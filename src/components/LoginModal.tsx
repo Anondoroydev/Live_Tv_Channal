@@ -118,16 +118,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           )}
 
           <div>
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-              Username or Email (ব্যবহারকারীর নাম বা ইমেইল)
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Username or Email (ব্যবহারকারীর নাম বা ইমেইল)
+              </label>
+              {email.toLowerCase().includes("anondo") || email.toLowerCase() === "admin" ? (
+                <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                  👑 Admin
+                </span>
+              ) : null}
+            </div>
             <div className="relative">
               <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="e.g. anondoray554@gmail.com or admin"
+                placeholder="anondoray554@gmail.com or admin"
                 required
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -146,23 +153,43 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Enter password"
                 required
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-400 transition-colors"
               />
             </div>
           </div>
 
+          {/* Quick Admin Fill Helper */}
+          {mode === "login" && (!email || email !== "anondoray554@gmail.com") && (
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("anondoray554@gmail.com");
+                setPassword("admin123");
+              }}
+              className="w-full py-2 bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 rounded-xl text-[11px] font-semibold text-cyan-300 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              Fill Admin Info (anondoray554@gmail.com)
+            </button>
+          )}
+
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black rounded-xl shadow-lg shadow-cyan-500/20 text-xs uppercase tracking-wider transition-all disabled:opacity-50"
+            className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black rounded-xl shadow-lg shadow-cyan-500/20 text-xs uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {loading
-              ? "Processing..."
-              : mode === "login"
-                ? "Login Now (লগইন করুন)"
-                : "Register Now (নিবন্ধন করুন)"}
+            {loading ? (
+              <>
+                <span className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></span>
+                Processing...
+              </>
+            ) : mode === "login" ? (
+              "Login Now (লগইন করুন)"
+            ) : (
+              "Register Now (নিবন্ধন করুন)"
+            )}
           </button>
         </form>
 

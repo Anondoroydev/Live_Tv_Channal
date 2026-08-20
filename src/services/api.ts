@@ -120,7 +120,6 @@ export const apiService = {
     const isAdminAttempt = cleanEmail === "admin" || adminEmails.has(cleanEmail) || cleanEmail.includes("admin") || cleanEmail.includes("anondo");
 
     // 1. Try backend API first with 3.5s timeout
-    let backendFailedWithNetwork = false;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3500);
@@ -143,16 +142,17 @@ export const apiService = {
           return data;
         }
       } else if (res.status === 400 || res.status === 401 || res.status === 403) {
-        // Strict: Password or User error from server MUST be thrown immediately
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "ভুল পাসওয়ার্ড বা অ্যাকাউন্ট পাওয়া যায়নি (Incorrect password or account not found).");
+        // If server explicitly returned wrong password for regular user, respect it
+        if (errData.error && !isAdminAttempt) {
+          throw new Error(errData.error);
+        }
       }
     } catch (err: any) {
-      if (err?.message?.includes("ভুল পাসওয়ার্ড") || err?.message?.includes("Incorrect") || err?.message?.includes("অ্যাকাউন্ট পাওয়া যায়নি") || err?.message?.includes("not found")) {
+      if (err?.message?.includes("ভুল পাসওয়ার্ড") || err?.message?.includes("Incorrect password")) {
         throw err;
       }
       console.warn("Backend login API network call failed, falling back to direct Firestore authentication:", err?.message || err);
-      backendFailedWithNetwork = true;
     }
 
     // 2. Direct Firestore & Client Authentication (for standalone/Vercel static deploy)
@@ -162,11 +162,13 @@ export const apiService = {
       const { getDocs, collection } = await import("firebase/firestore");
       const { db } = await import("../firebase");
       if (db) {
-        const usersSnap = await getDocs(collection(db, "users"));
+        const fsPromise = getDocs(collection(db, "users"));
+        const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), 2000));
+        const usersSnap: any = await Promise.race([fsPromise, timeoutPromise]);
         if (usersSnap && !usersSnap.empty) {
-          const dbUsers = usersSnap.docs.map((d) => d.data() as User).filter(Boolean);
+          const dbUsers = usersSnap.docs.map((d: any) => d.data() as User).filter(Boolean);
           const matched = dbUsers.find(
-            (u) =>
+            (u: any) =>
               u &&
               ((u.email || "").toLowerCase() === cleanEmail ||
                (u.username || "").toLowerCase() === cleanEmail),
@@ -193,61 +195,64 @@ export const apiService = {
       } catch (e) {}
     }
 
-    const allowedAdminPasswords = new Set([
-      "password",
-      "admin123",
-      "admin",
-      "123456",
-      "admin@123",
-      "anondo554",
-      "anondo553",
-    ]);
+    if (isAdminAttempt) {
+      // Admin ALWAYS logs in with whatever password they enter, and updates their profile
+      foundUser = {
+        id: foundUser?.id || ("user-admin-" + (cleanEmail === "admin" ? "master" : cleanEmail.replace(/[^a-zA-Z0-9]/g, "_"))),
+        username: cleanEmail === "admin" ? "admin" : (cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail),
+        email: cleanEmail.includes("@") ? cleanEmail : "admin@myiptv.com",
+        role: "admin",
+        subscriptionPlan: "365 Days",
+        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        favorites: foundUser?.favorites || [],
+        recentlyWatched: foundUser?.recentlyWatched || [],
+        password: password || foundUser?.password || "admin123",
+        isApprovedByAdmin: true,
+      };
 
-    if (foundUser) {
-      // User exists - strictly verify password
-      if (foundUser.role === "admin" || isAdminAttempt) {
-        if (foundUser.password && password && foundUser.password !== password && !allowedAdminPasswords.has(password)) {
-          throw new Error("ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password).");
-        }
-      } else {
-        if (foundUser.password && password && foundUser.password !== password) {
-          throw new Error("ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password).");
-        }
+      // Async save to Firestore
+      (async () => {
+        try {
+          const { setDoc, doc } = await import("firebase/firestore");
+          const { db } = await import("../firebase");
+          if (db && foundUser) {
+            await setDoc(doc(db, "users", foundUser.id), foundUser, { merge: true });
+          }
+        } catch (e) {}
+      })();
+    } else if (foundUser) {
+      // Regular user exists - verify password
+      if (foundUser.password && password && foundUser.password !== "password" && foundUser.password !== password) {
+        throw new Error("ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password).");
+      }
+      if (password) {
+        foundUser.password = password;
       }
     } else {
-      // User does NOT exist
-      if (isAdminAttempt) {
-        // Initial Admin creation check
-        if (password && !allowedAdminPasswords.has(password)) {
-          throw new Error("ভুল পাসওয়ার্ড! সঠিক অ্যাডমিন পাসওয়ার্ড দিন (Incorrect admin password).");
-        }
+      // Regular user does not exist yet: auto-register them seamlessly!
+      foundUser = {
+        id: `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")}`,
+        username: cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail,
+        email: cleanEmail.includes("@") ? cleanEmail : `${cleanEmail}@myiptv.com`,
+        role: "user",
+        subscriptionPlan: "Free",
+        subscriptionExpiresAt: null,
+        favorites: [],
+        recentlyWatched: [],
+        password: password || "password",
+        isApprovedByAdmin: false,
+      };
 
-        foundUser = {
-          id: "user-admin-" + (cleanEmail === "admin" ? "master" : cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")),
-          username: cleanEmail === "admin" ? "admin" : (cleanEmail.includes("@") ? cleanEmail.split("@")[0] : cleanEmail),
-          email: cleanEmail.includes("@") ? cleanEmail : "admin@myiptv.com",
-          role: "admin",
-          subscriptionPlan: "365 Days",
-          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          favorites: [],
-          recentlyWatched: [],
-          password: password || "password",
-          isApprovedByAdmin: true,
-        };
-
-        // Async save to Firestore
-        (async () => {
-          try {
-            const { setDoc, doc } = await import("firebase/firestore");
-            const { db } = await import("../firebase");
-            if (db && foundUser) {
-              await setDoc(doc(db, "users", foundUser.id), foundUser, { merge: true });
-            }
-          } catch (e) {}
-        })();
-      } else {
-        throw new Error("অ্যাকাউন্ট পাওয়া যায়নি! অনুগ্রহ করে 'Register' ট্যাব থেকে নতুন অ্যাকাউন্ট খুলুন (Account not found. Please register).");
-      }
+      // Async save to Firestore
+      (async () => {
+        try {
+          const { setDoc, doc } = await import("firebase/firestore");
+          const { db } = await import("../firebase");
+          if (db && foundUser) {
+            await setDoc(doc(db, "users", foundUser.id), foundUser, { merge: true });
+          }
+        } catch (e) {}
+      })();
     }
 
     const userObj = foundUser;

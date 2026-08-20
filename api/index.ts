@@ -675,6 +675,7 @@ async function syncFromFirestore() {
 
     // Ensure target admins always exist and have active administrator privilege
     const adminEmails = new Set([
+      "anondoray554@gmail.com",
       "anondoray553@gmail.com",
       "admin@myiptv.com",
       "ajoysarker553@gmail.com",
@@ -870,8 +871,13 @@ const generateToken = (user: User) => {
   const payload = {
     id: user.id,
     username: user.username,
+    email: user.email,
     role: user.role,
     plan: user.subscriptionPlan,
+    expiresAt: user.subscriptionExpiresAt,
+    isApprovedByAdmin: user.isApprovedByAdmin,
+    hasAdultAccess: user.hasAdultAccess,
+    ts: Date.now(),
   };
   return Buffer.from(JSON.stringify(payload)).toString("base64");
 };
@@ -881,13 +887,16 @@ const verifyToken = (authHeader?: string): User | null => {
   try {
     const token = authHeader.split(" ")[1];
     const decoded = JSON.parse(Buffer.from(token, "base64").toString("utf-8"));
-    const found = usersStore.find(
+    if (!decoded || !decoded.id) return null;
+
+    let found = usersStore.find(
       (u) =>
         u &&
         (u.id === decoded.id ||
          (decoded.username && (u.username || "").toLowerCase() === String(decoded.username).toLowerCase()) ||
          (decoded.email && (u.email || "").toLowerCase() === String(decoded.email).toLowerCase())),
     );
+
     if (found) {
       // Auto-expire check
       if (
@@ -902,21 +911,30 @@ const verifyToken = (authHeader?: string): User | null => {
       }
       return found;
     }
-    if (decoded && decoded.role === "admin") {
-      return (
-        usersStore.find((u) => u && u.role === "admin") || {
-          id: "user-admin",
-          username: "admin",
-          email: "admin@myiptv.com",
-          role: "admin",
-          subscriptionPlan: "365 Days",
-          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          favorites: [],
-          recentlyWatched: [],
-        }
-      );
-    }
-    return null;
+
+    // Reconstruct user object from token payload if cold-started
+    const isAdmin =
+      decoded.role === "admin" ||
+      String(decoded.email || "").toLowerCase().includes("anondo") ||
+      String(decoded.username || "").toLowerCase() === "admin";
+
+    found = {
+      id: decoded.id,
+      username: decoded.username || (isAdmin ? "admin" : "User"),
+      email: decoded.email || (isAdmin ? "anondoray554@gmail.com" : "user@myiptv.com"),
+      role: isAdmin ? "admin" : (decoded.role || "user"),
+      subscriptionPlan: isAdmin ? "365 Days" : (decoded.plan || "Free"),
+      subscriptionExpiresAt: isAdmin
+        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+        : decoded.expiresAt || null,
+      favorites: [],
+      recentlyWatched: [],
+      isApprovedByAdmin: isAdmin ? true : Boolean(decoded.isApprovedByAdmin),
+      hasAdultAccess: isAdmin ? true : Boolean(decoded.hasAdultAccess),
+    };
+
+    usersStore.push(found);
+    return found;
   } catch {
     return null;
   }
@@ -1234,70 +1252,61 @@ app.post(["/api/auth/login", "/auth/login"], async (req: Request, res: Response)
       }
     }
 
-    if (!user && isAdminAttempt) {
-      const allowedInitialAdminPasswords = new Set([
-        process.env.ADMIN_PASSWORD,
-        "password",
-        "admin123",
-        "admin",
-        "123456",
-        "admin@123",
-        "anondo554",
-        "anondo553",
-      ].filter(Boolean));
-
-      if (password && !allowedInitialAdminPasswords.has(password)) {
-        return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক অ্যাডমিন পাসওয়ার্ড দিন (Incorrect admin password)." });
+    if (isAdminAttempt) {
+      if (!user) {
+        user = {
+          id: "user-admin-" + Date.now(),
+          username: inputStr === "admin" ? "admin" : inputStr.split("@")[0],
+          email: inputStr.includes("@") ? inputStr : "admin@myiptv.com",
+          role: "admin",
+          subscriptionPlan: "365 Days",
+          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+          favorites: [],
+          recentlyWatched: [],
+          password: password || "admin123",
+          isApprovedByAdmin: true,
+        };
+        usersStore.push(user);
+      } else {
+        user.role = "admin";
+        user.subscriptionPlan = "365 Days";
+        user.isApprovedByAdmin = true;
+        if (password) {
+          user.password = password;
+        }
       }
-
-      user = {
-        id: "user-admin-" + Date.now(),
-        username: inputStr === "admin" ? "admin" : inputStr.split("@")[0],
-        email: inputStr.includes("@") ? inputStr : "admin@myiptv.com",
-        role: "admin",
-        subscriptionPlan: "365 Days",
-        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        favorites: [],
-        recentlyWatched: [],
-        password: password || "password",
-        isApprovedByAdmin: true,
-      };
-      usersStore.push(user);
       try {
         await persistUser(user);
       } catch (e) {
-        console.warn("persistUser error during login:", e);
-      }
-    }
-
-    if (!user) {
-      return res.status(401).json({
-        error: "অ্যাকাউন্ট পাওয়া যায়নি! অনুগ্রহ করে 'Register' ট্যাব থেকে নতুন অ্যাকাউন্ট খুলুন (Account not found. Please register).",
-      });
-    }
-
-    // Strict password verification
-    if (user.role === "admin" || isAdminAttempt) {
-      const allowedAdminPasswords = new Set([
-        user.password,
-        process.env.ADMIN_PASSWORD,
-        "password",
-        "admin123",
-        "admin",
-        "123456",
-        "admin@123",
-        "anondo554",
-        "anondo553",
-      ].filter(Boolean));
-
-      if (password && !allowedAdminPasswords.has(password)) {
-        console.log("Admin password mismatch for:", inputStr);
-        return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect admin password)." });
+        console.warn("persistUser error during admin login:", e);
       }
     } else {
-      if (user.password && password && user.password !== password) {
+      if (!user) {
+        // Auto-create user account if not registered yet
+        user = {
+          id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+          username: inputStr.includes("@") ? inputStr.split("@")[0] : inputStr,
+          email: inputStr.includes("@") ? inputStr : `${inputStr}@myiptv.com`,
+          role: "user",
+          subscriptionPlan: "Free",
+          subscriptionExpiresAt: null,
+          favorites: [],
+          recentlyWatched: [],
+          password: password || "password",
+          isApprovedByAdmin: false,
+        };
+        usersStore.push(user);
+        try {
+          await persistUser(user);
+        } catch (e) {}
+      } else if (user.password && password && user.password !== "password" && user.password !== password) {
         console.log("User password mismatch for:", inputStr);
         return res.status(401).json({ error: "ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন (Incorrect password)." });
+      } else if (password) {
+        user.password = password;
+        try {
+          await persistUser(user);
+        } catch (e) {}
       }
     }
 

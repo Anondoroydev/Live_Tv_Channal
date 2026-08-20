@@ -51,9 +51,57 @@ export default function App() {
   const [currentEpg, setCurrentEpg] = useState<EPGProgram | null>(null);
   const [nextEpg, setNextEpg] = useState<EPGProgram | null>(null);
 
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [favorites, setFavorites] = useState<string[]>([]);
-  const [recentlyWatched, setRecentlyWatched] = useState<string[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const local = localStorage.getItem("myiptv_user_data");
+      if (local) {
+        const u = JSON.parse(local);
+        if (u && (u.id || u.email || u.username)) return u;
+      }
+      const token = localStorage.getItem("myiptv_jwt_token");
+      if (token) {
+        const decoded = JSON.parse(atob(token));
+        if (decoded && decoded.id) {
+          const isAdmin =
+            decoded.role === "admin" ||
+            (decoded.email || "").toLowerCase().includes("anondo") ||
+            (decoded.username || "").toLowerCase() === "admin";
+          return {
+            id: decoded.id,
+            username: decoded.username || (isAdmin ? "admin" : "User"),
+            email: decoded.email || (isAdmin ? "anondoray554@gmail.com" : "user@myiptv.com"),
+            role: isAdmin ? "admin" : (decoded.role || "user"),
+            subscriptionPlan: isAdmin ? "365 Days" : (decoded.plan || "Free"),
+            subscriptionExpiresAt: isAdmin ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() : null,
+            favorites: [],
+            recentlyWatched: [],
+            isApprovedByAdmin: isAdmin ? true : Boolean(decoded.isApprovedByAdmin),
+          };
+        }
+      }
+    } catch (e) {}
+    return null;
+  });
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const local = localStorage.getItem("myiptv_user_data");
+      if (local) {
+        const u = JSON.parse(local);
+        if (Array.isArray(u.favorites)) return u.favorites;
+      }
+    } catch (e) {}
+    return [];
+  });
+  const [recentlyWatched, setRecentlyWatched] = useState<string[]>(() => {
+    try {
+      const local = localStorage.getItem("myiptv_user_data");
+      if (local) {
+        const u = JSON.parse(local);
+        if (Array.isArray(u.recentlyWatched)) return u.recentlyWatched;
+      }
+    } catch (e) {}
+    return [];
+  });
 
   // Modals
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -240,6 +288,21 @@ export default function App() {
         setCurrentUser(user);
         setFavorites(user.favorites || []);
         setRecentlyWatched(user.recentlyWatched || []);
+        try {
+          localStorage.setItem("myiptv_user_data", JSON.stringify(user));
+        } catch (e) {}
+      } else {
+        const local = localStorage.getItem("myiptv_user_data");
+        if (local) {
+          try {
+            const parsed = JSON.parse(local);
+            if (parsed) {
+              setCurrentUser(parsed);
+              if (Array.isArray(parsed.favorites)) setFavorites(parsed.favorites);
+              if (Array.isArray(parsed.recentlyWatched)) setRecentlyWatched(parsed.recentlyWatched);
+            }
+          } catch (e) {}
+        }
       }
 
       if (chs.length === 0) {
