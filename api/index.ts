@@ -26,6 +26,7 @@ import {
   INITIAL_CHANNELS,
   generateSampleEPG,
 } from "../src/data/initialChannels";
+import firebaseConfigJson from "../firebase-applet-config.json";
 import type {
   Channel,
   EPGProgram,
@@ -170,13 +171,14 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Initialize Firebase Firestore
 let firebaseConfig: any = {
-  projectId: "gen-lang-client-0748817758",
-  appId: "1:798244002253:web:224c34bd7570e8d5bf0c84",
-  apiKey: "AIzaSyBNHtSOpL_5hQOyjuR06ZkrZh1wn2mn3Ks",
-  authDomain: "gen-lang-client-0748817758.firebaseapp.com",
-  storageBucket: "gen-lang-client-0748817758.firebasestorage.app",
-  messagingSenderId: "798244002253",
-  firestoreDatabaseId: "ai-studio-remixremixremixr-d4b7c768-664f-4299-952e-1443f0101616"
+  ...firebaseConfigJson,
+  projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || firebaseConfigJson.projectId,
+  appId: process.env.FIREBASE_APP_ID || process.env.VITE_FIREBASE_APP_ID || firebaseConfigJson.appId,
+  apiKey: process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || firebaseConfigJson.apiKey,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || process.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfigJson.authDomain,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || process.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfigJson.storageBucket,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfigJson.messagingSenderId,
+  firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || firebaseConfigJson.firestoreDatabaseId || "ai-studio-remixremixremixr-66b7eff1-8688-4e15-8635-2b7b51a27253",
 };
 
 try {
@@ -189,7 +191,8 @@ try {
   ];
   for (const p of configPaths) {
     if (fs.existsSync(p)) {
-      firebaseConfig = JSON.parse(fs.readFileSync(p, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
+      firebaseConfig = { ...firebaseConfig, ...parsed };
       break;
     }
   }
@@ -1141,6 +1144,27 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       inputStr === "admin@myiptv.com" ||
       adminEmails.has(inputStr);
 
+    if (!user && db && !firestoreQuotaExhausted) {
+      try {
+        const usersSnap = await getDocs(collection(db, "users"));
+        if (usersSnap && !usersSnap.empty) {
+          const dbUsers = usersSnap.docs.map((d) => d.data() as User).filter(Boolean);
+          const matchedUser = dbUsers.find(
+            (u) =>
+              u &&
+              ((u.email || "").toLowerCase() === inputStr ||
+               (u.username || "").toLowerCase() === inputStr),
+          );
+          if (matchedUser) {
+            user = matchedUser;
+            usersStore.push(user);
+          }
+        }
+      } catch (e) {
+        console.warn("Direct Firestore user lookup error on login:", e);
+      }
+    }
+
     if (!user && isAdminAttempt) {
       user = {
         id: "user-admin-" + Date.now(),
@@ -1496,10 +1520,40 @@ app.post("/api/admin/payments/sample", async (req: Request, res: Response) => {
 });
 
 // Channel Endpoints
-app.get("/api/channels", (req: Request, res: Response) => {
+app.get("/api/channels", async (req: Request, res: Response) => {
   console.log("API request: /api/channels called");
   const category = req.query.category as string;
   const search = req.query.search as string;
+
+  // Auto-sync channels from Firestore channel_chunks if in-memory list is empty or uninitialized
+  if ((channelsStore.length === 0 || channelsStore.length === INITIAL_CHANNELS.length) && db && !firestoreQuotaExhausted) {
+    try {
+      const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+      if (chunksSnap && !chunksSnap.empty) {
+        const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+        chunksSnap.docs.forEach((d) => {
+          const docData = d.data();
+          if (docData && Array.isArray(docData.channels)) {
+            loadedChunks.push({
+              chunkIndex: docData.chunkIndex ?? 0,
+              channels: docData.channels,
+            });
+          }
+        });
+        loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+        if (fsChannels.length > 0) {
+          channelsStore = fsChannels.map((c) => ({
+            ...c,
+            isPremium: classifyIsPremium(c.name, c.category),
+          }));
+          console.log(`📡 Loaded ${channelsStore.length} channels from Firestore channel_chunks`);
+        }
+      }
+    } catch (e) {
+      console.warn("Error reading channel_chunks in /api/channels:", e);
+    }
+  }
 
   const user = verifyToken(req.headers.authorization);
   const hasAdult = user?.role === "admin" || Boolean(user?.hasAdultAccess);

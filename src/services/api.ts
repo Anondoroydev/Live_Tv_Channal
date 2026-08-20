@@ -314,7 +314,9 @@ export const apiService = {
       const allChannels: Channel[] = await handleResponse<Channel[]>(res);
       
       let finalChannels = allChannels;
-      if (!finalChannels || finalChannels.length === 0) {
+      const isDefaultFallback = !finalChannels || finalChannels.length === 0 || (finalChannels.length === INITIAL_CHANNELS.length && finalChannels[0]?.id === INITIAL_CHANNELS[0]?.id);
+
+      if (isDefaultFallback) {
         try {
           const { getDocs, collection } = await import("firebase/firestore");
           const { db } = await import("../firebase");
