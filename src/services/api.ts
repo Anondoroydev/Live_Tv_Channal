@@ -313,16 +313,76 @@ export const apiService = {
       
       const allChannels: Channel[] = await handleResponse<Channel[]>(res);
       
+      let finalChannels = allChannels;
+      if (!finalChannels || finalChannels.length === 0) {
+        try {
+          const { getDocs, collection } = await import("firebase/firestore");
+          const { db } = await import("../firebase");
+          if (db) {
+            const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+            if (chunksSnap && !chunksSnap.empty) {
+              const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+              chunksSnap.docs.forEach((d) => {
+                const docData = d.data();
+                if (docData && Array.isArray(docData.channels)) {
+                  loadedChunks.push({
+                    chunkIndex: docData.chunkIndex ?? 0,
+                    channels: docData.channels,
+                  });
+                }
+              });
+              loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+              const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+              if (fsChannels.length > 0) {
+                finalChannels = fsChannels;
+              }
+            }
+          }
+        } catch (err) {}
+      }
+
+      if ((!finalChannels || finalChannels.length === 0) && (!channelsCache || channelsCache.length === 0)) {
+        finalChannels = INITIAL_CHANNELS as Channel[];
+      }
+
       if (!category && !search) {
-        channelsCache = allChannels;
+        channelsCache = finalChannels;
         lastFetched = Date.now();
       }
       
       // Filter out inactive channels (those that couldn't be validated)
-      return allChannels.filter(c => c.isActive !== false);
+      return finalChannels.filter(c => c.isActive !== false);
     } catch (e) {
       console.warn("fetchChannels failed, using initial/cached channels fallback:", e);
-      let list = getStoredChannelsFallback();
+      let list: Channel[] = [];
+      try {
+        const { getDocs, collection } = await import("firebase/firestore");
+        const { db } = await import("../firebase");
+        if (db) {
+          const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+          if (chunksSnap && !chunksSnap.empty) {
+            const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+            chunksSnap.docs.forEach((d) => {
+              const docData = d.data();
+              if (docData && Array.isArray(docData.channels)) {
+                loadedChunks.push({
+                  chunkIndex: docData.chunkIndex ?? 0,
+                  channels: docData.channels,
+                });
+              }
+            });
+            loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+            list = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+          }
+        }
+      } catch (fbErr) {}
+
+      if (list.length === 0) {
+        list = getStoredChannelsFallback();
+      }
+      if (list.length === 0) {
+        list = INITIAL_CHANNELS as Channel[];
+      }
       if (category && category !== "All") {
         list = list.filter((c) => c.category === category);
       }
