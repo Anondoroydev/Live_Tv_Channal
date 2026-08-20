@@ -100,6 +100,107 @@ const getStoredChannelsFallback = (): Channel[] => {
   return getStoredChannelsDirect();
 };
 
+export async function fetchChannelsFromFirestoreDirect(): Promise<Channel[]> {
+  try {
+    const { getDocs, collection, query, orderBy, doc, getDoc } = await import("firebase/firestore");
+    const { db } = await import("../firebase");
+    if (!db) return [];
+
+    // 1. Try channel_chunks (chunk_0, chunk_1, ...)
+    try {
+      const chunksSnap = await getDocs(collection(db, "channel_chunks"));
+      if (chunksSnap && !chunksSnap.empty) {
+        const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
+        chunksSnap.docs.forEach((d) => {
+          const docData = d.data();
+          if (docData && Array.isArray(docData.channels)) {
+            loadedChunks.push({
+              chunkIndex: docData.chunkIndex ?? 0,
+              channels: docData.channels,
+            });
+          }
+        });
+        loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+        const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
+        if (fsChannels.length > 0) {
+          try {
+            localStorage.setItem("myiptv_custom_channels", JSON.stringify(fsChannels));
+          } catch (e) {}
+          return fsChannels;
+        }
+      }
+    } catch (err) {
+      console.warn("channel_chunks direct read failed:", err);
+    }
+
+    // 2. Try settings/channelsList
+    try {
+      const chListDoc = await getDoc(doc(db, "settings", "channelsList"));
+      if (chListDoc && chListDoc.exists()) {
+        const data = chListDoc.data();
+        if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+          const fsChannels = data.channels.filter(Boolean);
+          try {
+            localStorage.setItem("myiptv_custom_channels", JSON.stringify(fsChannels));
+          } catch (e) {}
+          return fsChannels;
+        }
+      }
+    } catch (err) {}
+
+    // 3. Try playlists collection
+    try {
+      const plSnap = await getDocs(query(collection(db, "playlists"), orderBy("createdAt", "desc")));
+      if (plSnap && !plSnap.empty) {
+        for (const plDoc of plSnap.docs) {
+          const plData = plDoc.data();
+          if (plData.fullContent && plData.fullContent.includes("#EXTINF")) {
+            const parsed = parseM3UClient(plData.fullContent);
+            if (parsed.channels.length > 0) {
+              try {
+                localStorage.setItem("myiptv_custom_channels", JSON.stringify(parsed.channels));
+              } catch (e) {}
+              return parsed.channels;
+            }
+          }
+        }
+      }
+    } catch (err) {}
+
+    // 4. Try channels collection
+    try {
+      const channelsSnap = await getDocs(collection(db, "channels"));
+      if (channelsSnap && !channelsSnap.empty) {
+        const rawList: Channel[] = [];
+        channelsSnap.docs.forEach((d, idx) => {
+          const data = d.data();
+          if (data && data.name) {
+            rawList.push({
+              id: d.id || data.id || `ch_${idx}`,
+              name: data.name,
+              category: data.category || "Entertainment",
+              logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
+              streamUrl: data.streamUrl || "",
+              channelNumber: data.channelNumber ?? idx,
+              isPremium: data.isPremium ?? false,
+              isActive: data.isActive !== false,
+            });
+          }
+        });
+        if (rawList.length > 0) {
+          try {
+            localStorage.setItem("myiptv_custom_channels", JSON.stringify(rawList));
+          } catch (e) {}
+          return rawList;
+        }
+      }
+    } catch (err) {}
+  } catch (err) {
+    console.warn("Direct Firestore channel load error:", err);
+  }
+  return [];
+}
+
 export const apiService = {
   // Auth API
   async login(
@@ -474,231 +575,66 @@ export const apiService = {
     if (category) params.append("category", category);
     if (search) params.append("search", search);
 
+    let finalChannels: Channel[] = [];
+
+    // 1. Try server API
     try {
       const res = await fetch(getApiUrl(`/api/channels?${params.toString()}`), {
         headers: getHeaders(),
       });
       
-      if (!res.ok) {
-        if (channelsCache && channelsCache.length > 0) return channelsCache;
-        if (res.status === 429 || res.status >= 500) {
-          await new Promise((r) => setTimeout(r, 1000));
-          const retryRes = await fetch(getApiUrl(`/api/channels?${params.toString()}`), {
-            headers: getHeaders(),
-          });
-          if (retryRes.ok) {
-             const data: Channel[] = await handleResponse<Channel[]>(retryRes);
-             if (!category && !search) {
-               channelsCache = data;
-               lastFetched = Date.now();
-             }
-             return data.filter((c) => c.isActive !== false);
+      if (res.ok) {
+        const allChannels: Channel[] = await handleResponse<Channel[]>(res);
+        if (Array.isArray(allChannels) && allChannels.length > 0) {
+          const isOnlyDefault = allChannels.length === INITIAL_CHANNELS.length && allChannels[0]?.id === INITIAL_CHANNELS[0]?.id;
+          if (!isOnlyDefault) {
+            finalChannels = allChannels;
           }
         }
-        throw new Error("Failed to fetch channels");
       }
-      
-      const allChannels: Channel[] = await handleResponse<Channel[]>(res);
-      
-      let finalChannels = allChannels;
-      const isDefaultFallback = !finalChannels || finalChannels.length === 0 || (finalChannels.length === INITIAL_CHANNELS.length && finalChannels[0]?.id === INITIAL_CHANNELS[0]?.id);
-
-      if (isDefaultFallback) {
-        try {
-          const { getDocs, collection, query, orderBy, doc, getDoc } = await import("firebase/firestore");
-          const { db } = await import("../firebase");
-          if (db) {
-            // 1. Try channel_chunks
-            const chunksSnap = await getDocs(collection(db, "channel_chunks"));
-            if (chunksSnap && !chunksSnap.empty) {
-              const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
-              chunksSnap.docs.forEach((d) => {
-                const docData = d.data();
-                if (docData && Array.isArray(docData.channels)) {
-                  loadedChunks.push({
-                    chunkIndex: docData.chunkIndex ?? 0,
-                    channels: docData.channels,
-                  });
-                }
-              });
-              loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
-              const fsChannels = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
-              if (fsChannels.length > 0) {
-                finalChannels = fsChannels;
-              }
-            }
-            
-            // 2. Try playlists collection
-            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
-              const plSnap = await getDocs(query(collection(db, "playlists"), orderBy("createdAt", "desc")));
-              if (plSnap && !plSnap.empty) {
-                for (const plDoc of plSnap.docs) {
-                  const plData = plDoc.data();
-                  if (plData.fullContent && plData.fullContent.includes("#EXTINF")) {
-                    const parsed = parseM3UClient(plData.fullContent);
-                    if (parsed.channels.length > 0) {
-                      finalChannels = parsed.channels;
-                      saveChannelsDirect(finalChannels, "m3u_text").catch(() => {});
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-
-            // 3. Try channels collection
-            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
-              const channelsSnap = await getDocs(collection(db, "channels"));
-              if (channelsSnap && !channelsSnap.empty) {
-                const rawList: Channel[] = [];
-                channelsSnap.docs.forEach((d, idx) => {
-                  const data = d.data();
-                  if (data && data.name) {
-                    rawList.push({
-                      id: d.id || data.id || `ch_${idx}`,
-                      name: data.name,
-                      category: data.category || "Entertainment",
-                      logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
-                      streamUrl: data.streamUrl || "",
-                      channelNumber: data.channelNumber ?? idx,
-                      isPremium: data.isPremium ?? false,
-                      isActive: data.isActive !== false,
-                    });
-                  }
-                });
-                if (rawList.length > 0) {
-                  finalChannels = rawList;
-                }
-              }
-            }
-
-            // 4. Try settings/channelsList
-            if (finalChannels.length === 0 || finalChannels.length === INITIAL_CHANNELS.length) {
-              const chListDoc = await getDoc(doc(db, "settings", "channelsList"));
-              if (chListDoc && chListDoc.exists()) {
-                const data = chListDoc.data();
-                if (data && Array.isArray(data.channels) && data.channels.length > 0) {
-                  finalChannels = data.channels.filter(Boolean);
-                }
-              }
-            }
-
-            if (finalChannels.length > 0 && finalChannels.length !== INITIAL_CHANNELS.length) {
-              try {
-                localStorage.setItem("myiptv_custom_channels", JSON.stringify(finalChannels));
-              } catch (e) {}
-            }
-          }
-        } catch (err) {}
-      }
-
-      if ((!finalChannels || finalChannels.length === 0) && (!channelsCache || channelsCache.length === 0)) {
-        finalChannels = getStoredChannelsFallback();
-        if (finalChannels.length === 0) {
-          finalChannels = INITIAL_CHANNELS as Channel[];
-        }
-      }
-
-      if (!category && !search) {
-        channelsCache = finalChannels;
-        lastFetched = Date.now();
-      }
-      
-      let result = finalChannels.filter(c => c.isActive !== false);
-
-      if (category && category !== "All" && category !== "Favorites" && category !== "Recently Watched") {
-        result = result.filter(c => c.category?.toLowerCase() === category.toLowerCase());
-      }
-      if (search) {
-        const q = search.toLowerCase();
-        result = result.filter(c => c.name?.toLowerCase().includes(q) || c.category?.toLowerCase().includes(q) || c.channelNumber?.toString().includes(q));
-      }
-
-      return result;
     } catch (e) {
-      console.warn("fetchChannels failed, using initial/cached channels fallback:", e);
-      let list: Channel[] = [];
-      try {
-        const { getDocs, collection, query, orderBy } = await import("firebase/firestore");
-        const { db } = await import("../firebase");
-        if (db) {
-          const chunksSnap = await getDocs(collection(db, "channel_chunks"));
-          if (chunksSnap && !chunksSnap.empty) {
-            const loadedChunks: { chunkIndex: number; channels: Channel[] }[] = [];
-            chunksSnap.docs.forEach((d) => {
-              const docData = d.data();
-              if (docData && Array.isArray(docData.channels)) {
-                loadedChunks.push({
-                  chunkIndex: docData.chunkIndex ?? 0,
-                  channels: docData.channels,
-                });
-              }
-            });
-            loadedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
-            list = loadedChunks.flatMap((c) => c.channels).filter(Boolean);
-            if (list.length > 0) {
-              try {
-                localStorage.setItem("myiptv_custom_channels", JSON.stringify(list));
-              } catch (e) {}
-            }
-          } else {
-            const plSnap = await getDocs(query(collection(db, "playlists"), orderBy("createdAt", "desc")));
-            if (plSnap && !plSnap.empty) {
-              for (const plDoc of plSnap.docs) {
-                const plData = plDoc.data();
-                if (plData.fullContent && plData.fullContent.includes("#EXTINF")) {
-                  const parsed = parseM3UClient(plData.fullContent);
-                  if (parsed.channels.length > 0) {
-                    list = parsed.channels;
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (list.length === 0) {
-              const channelsSnap = await getDocs(collection(db, "channels"));
-              if (channelsSnap && !channelsSnap.empty) {
-                const rawList: Channel[] = [];
-                channelsSnap.docs.forEach((d, idx) => {
-                  const data = d.data();
-                  if (data && data.name) {
-                    rawList.push({
-                      id: d.id || data.id || `ch_${idx}`,
-                      name: data.name,
-                      category: data.category || "Entertainment",
-                      logo: data.logo || "https://images.unsplash.com/photo-1594909122845-11baa439b7bf?w=100",
-                      streamUrl: data.streamUrl || "",
-                      channelNumber: data.channelNumber ?? idx,
-                      isPremium: data.isPremium ?? false,
-                      isActive: data.isActive !== false,
-                    });
-                  }
-                });
-                if (rawList.length > 0) {
-                  list = rawList;
-                }
-              }
-            }
-          }
-        }
-      } catch (fbErr) {}
-
-      if (list.length === 0) {
-        list = getStoredChannelsFallback();
-      }
-      if (list.length === 0) {
-        list = INITIAL_CHANNELS as Channel[];
-      }
-      if (category && category !== "All" && category !== "Favorites" && category !== "Recently Watched") {
-        list = list.filter((c) => c.category?.toLowerCase() === category.toLowerCase());
-      }
-      if (search) {
-        const q = search.toLowerCase();
-        list = list.filter((c) => c.name?.toLowerCase().includes(q) || c.category?.toLowerCase().includes(q) || c.channelNumber?.toString().includes(q));
-      }
-      return list.filter(c => c.isActive !== false);
+      console.warn("Server fetchChannels failed, using direct Firestore fallback:", e);
     }
+
+    // 2. Direct Firestore fallback (essential for Vercel & brand new devices)
+    if (finalChannels.length === 0) {
+      const fsChannels = await fetchChannelsFromFirestoreDirect();
+      if (fsChannels.length > 0) {
+        finalChannels = fsChannels;
+      }
+    }
+
+    // 3. If still empty, check local storage fallback
+    if (finalChannels.length === 0) {
+      finalChannels = getStoredChannelsFallback();
+    }
+
+    // 4. If completely empty, fallback to INITIAL_CHANNELS
+    if (finalChannels.length === 0) {
+      finalChannels = INITIAL_CHANNELS as Channel[];
+    }
+
+    if (!category && !search) {
+      channelsCache = finalChannels;
+      lastFetched = Date.now();
+    }
+
+    let result = finalChannels.filter((c) => c.isActive !== false);
+
+    if (category && category !== "All" && category !== "Favorites" && category !== "Recently Watched") {
+      result = result.filter((c) => c.category?.toLowerCase() === category.toLowerCase());
+    }
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter(
+        (c) =>
+          c.name?.toLowerCase().includes(q) ||
+          c.category?.toLowerCase().includes(q) ||
+          c.channelNumber?.toString().includes(q)
+      );
+    }
+
+    return result;
   },
 
   async fetchCategories(): Promise<string[]> {
@@ -708,14 +644,23 @@ export const apiService = {
       });
       if (res.ok) {
         const data = await handleResponse<any>(res);
-        if (Array.isArray(data)) return data;
-        if (data && Array.isArray(data.categories)) return data.categories;
+        const list = Array.isArray(data) ? data : data?.categories;
+        if (Array.isArray(list) && list.length > 1) {
+          return list;
+        }
       }
     } catch (e) {
-      console.warn("Failed to fetch categories, falling back to dynamic channel list:", e);
+      console.warn("Failed to fetch categories via API, deriving from Firestore/channels:", e);
     }
 
-    const all = getStoredChannelsFallback();
+    let all = channelsCache && channelsCache.length > 0 ? channelsCache : getStoredChannelsFallback();
+    if (all.length === 0 || (all.length === INITIAL_CHANNELS.length && all[0]?.id === INITIAL_CHANNELS[0]?.id)) {
+      const fsChannels = await fetchChannelsFromFirestoreDirect();
+      if (fsChannels.length > 0) {
+        all = fsChannels;
+      }
+    }
+
     const cats = Array.from(new Set(all.map((c) => c.category).filter(Boolean)));
     if (cats.length === 0) {
       return [
@@ -982,10 +927,10 @@ export const apiService = {
       const res = await fetch(getApiUrl(`/api/admin/channels?${params.toString()}`), { headers: getHeaders() });
       if (res.ok) {
         const data = await handleResponse<any>(res);
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && data.length > 0) {
           return { channels: data, total: data.length };
         }
-        if (data && Array.isArray(data.channels)) {
+        if (data && Array.isArray(data.channels) && data.channels.length > 0) {
           return data;
         }
       }
@@ -993,7 +938,14 @@ export const apiService = {
       console.warn("adminFetchChannels server error, using fallback channels:", e);
     }
 
-    const all = getStoredChannelsFallback();
+    let all = channelsCache && channelsCache.length > 0 ? channelsCache : getStoredChannelsFallback();
+    if (all.length === 0 || (all.length === INITIAL_CHANNELS.length && all[0]?.id === INITIAL_CHANNELS[0]?.id)) {
+      const fsChannels = await fetchChannelsFromFirestoreDirect();
+      if (fsChannels.length > 0) {
+        all = fsChannels;
+      }
+    }
+
     let filtered = all;
     if (search) {
       const q = search.toLowerCase();

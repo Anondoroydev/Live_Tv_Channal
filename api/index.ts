@@ -194,13 +194,21 @@ let db: any = null;
 try {
   setLogLevel("silent");
   const firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
-  db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-  console.log("🔥 Firebase Firestore initialized successfully with database ID:", firebaseConfig.firestoreDatabaseId);
+  try {
+    if (firebaseConfig.firestoreDatabaseId) {
+      db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+    } else {
+      db = getFirestore(firebaseApp);
+    }
+  } catch (e) {
+    db = getFirestore(firebaseApp);
+  }
+  console.log("🔥 Firebase Firestore initialized successfully with database ID:", firebaseConfig.firestoreDatabaseId || "(default)");
 } catch (e) {
   console.log("ℹ️ Firestore initialization failed, running in-memory");
 }
 
-export function withTimeout<T>(promise: Promise<T>, ms: number = 2500, fallback: T): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, ms: number = 6000, fallback: T): Promise<T> {
   let timer: any;
   const timeoutPromise = new Promise<T>((resolve) => {
     timer = setTimeout(() => resolve(fallback), ms);

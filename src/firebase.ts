@@ -27,5 +27,21 @@ try {
 } catch (e) {}
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+let firestoreInstance: any = null;
+try {
+  if (firebaseConfig.firestoreDatabaseId) {
+    firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  } else {
+    firestoreInstance = getFirestore(app);
+  }
+} catch (e) {
+  try {
+    firestoreInstance = getFirestore(app);
+  } catch (err) {
+    console.warn("Firestore initialization error in client:", err);
+  }
+}
+
+export const db = firestoreInstance;
 
