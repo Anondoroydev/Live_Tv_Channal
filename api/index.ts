@@ -364,19 +364,44 @@ const CHANNELS_CACHE_FILE = process.env.VERCEL
 
 let hasSynced = false;
 let syncPromise: Promise<void> | null = null;
+let lastSyncCheckTime = 0;
+let localPlaylistSyncedAt = "";
+
+async function checkAndReloadIfChanged() {
+  if (!db || firestoreQuotaExhausted) return;
+  try {
+    const playlistDoc = await getDoc(doc(db, "settings", "playlistSource"));
+    if (playlistDoc && playlistDoc.exists()) {
+      const data = playlistDoc.data();
+      const firestoreSyncedAt = data?.lastSyncedAt || "";
+      if (firestoreSyncedAt && firestoreSyncedAt !== localPlaylistSyncedAt) {
+        console.log(`🔄 Playlist source updated in Firestore (${firestoreSyncedAt} vs local ${localPlaylistSyncedAt}). Reloading channels...`);
+        await syncFromFirestore();
+      }
+    }
+  } catch (err: any) {
+    console.warn("Error checking for playlist updates in Firestore:", err?.message || err);
+  }
+}
 
 export async function ensureSynced() {
-  if (hasSynced) return;
-  if (!syncPromise) {
-    syncPromise = syncFromFirestore()
-      .catch((err) => {
-        console.warn("⚠️ Firestore sync failed, using in-memory store:", err?.message || err);
-      })
-      .finally(() => {
-        hasSynced = true;
-      });
+  const now = Date.now();
+  if (!hasSynced) {
+    if (!syncPromise) {
+      syncPromise = syncFromFirestore()
+        .catch((err) => {
+          console.warn("⚠️ Firestore sync failed, using in-memory store:", err?.message || err);
+        })
+        .finally(() => {
+          hasSynced = true;
+          lastSyncCheckTime = Date.now();
+        });
+    }
+    await syncPromise;
+  } else if (now - lastSyncCheckTime > 30000) {
+    lastSyncCheckTime = now;
+    await checkAndReloadIfChanged();
   }
-  return syncPromise;
 }
 
 // Global middleware to guarantee that firestore channels are loaded before any api endpoints process a request
@@ -498,42 +523,66 @@ async function syncFromFirestore() {
       console.warn("Firestore Error (Payments):", err?.message || err);
     }
 
-    // Ensure default admin exists and is set to role="admin"
-    const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
-    const hasAdmin = usersStore.some(
-      (u) =>
-        u.role === "admin" ||
-        (u?.username || "").toLowerCase() === "admin" ||
-        (u?.email || "").toLowerCase() === "admin@myiptv.com" ||
-        (u?.email || "").toLowerCase() === adminEmail ||
-        (u?.email || "").toLowerCase() === "ajoysarker553@gmail.com"
-    );
+    // Ensure target admins always exist and have active administrator privilege
+    const adminEmails = new Set([
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
 
-    if (!hasAdmin) {
+    for (const email of adminEmails) {
+      const exists = usersStore.find(
+        (u) => u && (u.email || "").toLowerCase() === email.toLowerCase()
+      );
+      if (!exists) {
+        const username = email.split("@")[0];
+        const newAdmin: User = {
+          id: `user-admin-${username}`,
+          username: username,
+          email: email,
+          role: "admin",
+          subscriptionPlan: "365 Days",
+          subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+          favorites: [],
+          recentlyWatched: [],
+          password: process.env.ADMIN_PASSWORD || "password",
+          isApprovedByAdmin: true,
+        };
+        usersStore.push(newAdmin);
+        await persistUser(newAdmin);
+        console.log(`Seeded admin user: ${email}`);
+      } else {
+        if (exists.role !== "admin" || !exists.isApprovedByAdmin) {
+          exists.role = "admin";
+          exists.subscriptionPlan = "365 Days";
+          exists.subscriptionExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+          exists.isApprovedByAdmin = true;
+          await persistUser(exists);
+          console.log(`Upgraded existing user to admin: ${email}`);
+        }
+      }
+    }
+
+    // Also ensure default 'admin' username account exists
+    const hasAdminUsername = usersStore.some(u => u && (u.username || "").toLowerCase() === "admin");
+    if (!hasAdminUsername) {
       const defaultAdmin: User = {
         id: "user-admin",
         username: "admin",
-        email: adminEmail,
+        email: "admin@myiptv.com",
         role: "admin",
         subscriptionPlan: "365 Days",
         subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
         favorites: [],
         recentlyWatched: [],
         password: process.env.ADMIN_PASSWORD || "password",
+        isApprovedByAdmin: true,
       };
       usersStore.push(defaultAdmin);
       await persistUser(defaultAdmin);
-    } else {
-      usersStore.forEach((u) => {
-        if (
-          (u?.username || "").toLowerCase() === "admin" ||
-          (u?.email || "").toLowerCase() === "admin@myiptv.com" ||
-          (u?.email || "").toLowerCase() === adminEmail ||
-          (u?.email || "").toLowerCase() === "ajoysarker553@gmail.com"
-        ) {
-          u.role = "admin";
-        }
-      });
     }
 
     // Sanitize dead/fake XXX VOD items or broken streams
@@ -567,6 +616,7 @@ async function syncFromFirestore() {
 
     if (playlistDoc && playlistDoc.exists()) {
       playlistSourceStore = playlistDoc.data() as any;
+      localPlaylistSyncedAt = playlistSourceStore.lastSyncedAt || "";
       console.log("Loaded playlist source settings from Firestore DB:", playlistSourceStore.type);
     }
 
@@ -1053,19 +1103,26 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Username or email is required" });
     }
 
-    const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
+    const adminEmails = new Set([
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
 
     let user = usersStore.find(
       (u) =>
-        (u?.email || "").toLowerCase() === inputStr ||
-        (u?.username || "").toLowerCase() === inputStr,
+        u &&
+        ((u.email || "").toLowerCase() === inputStr ||
+         (u.username || "").toLowerCase() === inputStr),
     );
 
     const isAdminAttempt =
       inputStr === "admin" ||
       inputStr === "admin@myiptv.com" ||
-      inputStr === adminEmail ||
-      inputStr === "ajoysarker553@gmail.com";
+      adminEmails.has(inputStr);
 
     if (!user && isAdminAttempt) {
       user = {
@@ -1157,8 +1214,9 @@ app.post("/api/auth/register", async (req: Request, res: Response) => {
     // Check if username or email is already taken
     const exists = usersStore.find(
       (u) =>
-        (u?.email || "").toLowerCase() === emailClean ||
-        (u?.username || "").toLowerCase() === usernameClean.toLowerCase(),
+        u &&
+        ((u.email || "").toLowerCase() === emailClean ||
+         (u.username || "").toLowerCase() === usernameClean.toLowerCase()),
     );
 
     if (exists) {
@@ -1168,11 +1226,17 @@ app.post("/api/auth/register", async (req: Request, res: Response) => {
     }
 
     // Create new user record
-    const adminEmail = (process.env.ADMIN_EMAIL || "anondoray553@gmail.com").toLowerCase();
+    const adminEmails = new Set([
+      "anondoray553@gmail.com",
+      "admin@myiptv.com",
+      "ajoysarker553@gmail.com",
+      "ajoysarkar9098@gmail.com",
+      "ajoysarker9098@gmail.com",
+      "ajoysarkar553@gmail.com"
+    ]);
+
     const isAdmin =
-      emailClean === adminEmail ||
-      emailClean === "admin@myiptv.com" ||
-      emailClean === "ajoysarker553@gmail.com" ||
+      adminEmails.has(emailClean) ||
       usernameClean.toLowerCase() === "admin";
 
     const role = isAdmin ? "admin" : "user";
