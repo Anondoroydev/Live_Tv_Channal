@@ -398,7 +398,7 @@ export async function ensureSynced() {
         });
     }
     await syncPromise;
-  } else if (now - lastSyncCheckTime > 30000) {
+  } else if (now - lastSyncCheckTime > 5000) {
     lastSyncCheckTime = now;
     await checkAndReloadIfChanged();
   }
@@ -493,7 +493,7 @@ async function syncFromFirestore() {
     }
 
     if (usersSnap && !usersSnap.empty) {
-      usersStore = usersSnap.docs.map((d) => d.data() as User);
+      usersStore = usersSnap.docs.map((d) => d.data() as User).filter((u) => u && u.id);
       console.log(`Loaded ${usersStore.length} users from Firestore DB`);
     } else {
       for (const u of usersStore) {
@@ -799,9 +799,10 @@ const verifyToken = (authHeader?: string): User | null => {
     const decoded = JSON.parse(Buffer.from(token, "base64").toString("utf-8"));
     const found = usersStore.find(
       (u) =>
-        u.id === decoded.id ||
-        (decoded.username && (u?.username || "").toLowerCase() === String(decoded.username).toLowerCase()) ||
-        (decoded.email && (u?.email || "").toLowerCase() === String(decoded.email).toLowerCase()),
+        u &&
+        (u.id === decoded.id ||
+         (decoded.username && (u.username || "").toLowerCase() === String(decoded.username).toLowerCase()) ||
+         (decoded.email && (u.email || "").toLowerCase() === String(decoded.email).toLowerCase())),
     );
     if (found) {
       // Auto-expire check
@@ -819,7 +820,7 @@ const verifyToken = (authHeader?: string): User | null => {
     }
     if (decoded && decoded.role === "admin") {
       return (
-        usersStore.find((u) => u.role === "admin") || {
+        usersStore.find((u) => u && u.role === "admin") || {
           id: "user-admin",
           username: "admin",
           email: "admin@myiptv.com",
@@ -840,7 +841,7 @@ const verifyToken = (authHeader?: string): User | null => {
 const ensureAdminUser = (authHeader?: string): User => {
   const user = verifyToken(authHeader);
   if (user && user.role === "admin") return user;
-  const adminUser = usersStore.find((u) => u.role === "admin");
+  const adminUser = usersStore.find((u) => u && u.role === "admin");
   if (adminUser) return adminUser;
   return {
     id: "user-admin",
@@ -1365,6 +1366,7 @@ app.get("/api/admin/payments", async (req: Request, res: Response) => {
 
   // Convert registered users into payment entries if not listed and not deleted
   usersStore.forEach(u => {
+    if (!u) return;
     if (u.role !== "admin") {
       const reqId = `req_${u.id}`;
       const isDeleted =
@@ -2907,7 +2909,7 @@ app.post("/api/admin/reset-database", async (req: Request, res: Response) => {
 app.post("/api/admin/users/:id/approve", async (req: Request, res: Response) => {
   const user = ensureAdminUser(req.headers.authorization);
   const { id } = req.params;
-  const userToApprove = usersStore.find((u) => u.id === id);
+  const userToApprove = usersStore.find((u) => u && u.id === id);
   if (!userToApprove) {
     return res.status(404).json({ error: "User not found" });
   }
@@ -2920,7 +2922,7 @@ app.post("/api/admin/users/:id/approve", async (req: Request, res: Response) => 
 
 app.get("/api/admin/users", (req: Request, res: Response) => {
   const user = ensureAdminUser(req.headers.authorization);
-  return res.json(usersStore);
+  return res.json(usersStore.filter(Boolean));
 });
 
 app.post("/api/admin/users", async (req: Request, res: Response) => {
@@ -2937,7 +2939,7 @@ app.post("/api/admin/users", async (req: Request, res: Response) => {
   }
 
   const existing = usersStore.find(
-    (u) => u.username.toLowerCase() === username.toLowerCase(),
+    (u) => u && u.username && u.username.toLowerCase() === username.toLowerCase(),
   );
   if (existing) {
     return res.status(400).json({ error: "Username already exists" });
@@ -2976,7 +2978,7 @@ app.delete("/api/admin/users/:id", async (req: Request, res: Response) => {
   const user = ensureAdminUser(req.headers.authorization);
   const { id } = req.params;
 
-  usersStore = usersStore.filter((u) => u.id !== id);
+  usersStore = usersStore.filter((u) => u && u.id !== id);
   await deleteUserDoc(id);
 
   return res.json({ message: "User deleted successfully" });
@@ -2990,7 +2992,7 @@ app.put(
     const { id } = req.params;
     const { plan }: { plan: SubscriptionPlan } = req.body;
 
-    const targetUser = usersStore.find((u) => u.id === id);
+    const targetUser = usersStore.find((u) => u && u.id === id);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
 
     targetUser.subscriptionPlan = plan;
@@ -3024,7 +3026,7 @@ app.put(
     const { id } = req.params;
     const { hasAdultAccess } = req.body;
 
-    const targetUser = usersStore.find((u) => u.id === id);
+    const targetUser = usersStore.find((u) => u && u.id === id);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
 
     targetUser.hasAdultAccess = !!hasAdultAccess;
