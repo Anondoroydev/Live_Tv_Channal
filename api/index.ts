@@ -738,25 +738,34 @@ async function persistChannels(channels: Channel[]) {
   await safeFirestoreWrite(async () => {
     if (!db) return;
 
-    // Delete existing chunks and fallback legacy doc first to prevent dirty state
-    const chunksColl = collection(db, "channel_chunks");
-    const existingSnap = await getDocs(chunksColl);
-    const batch = writeBatch(db);
-    let opCount = 0;
-    
-    existingSnap.docs.forEach((doc) => {
-      batch.delete(doc.ref);
-      opCount++;
-    });
-    
+    // Delete existing chunks and fallback legacy doc safely
     try {
-      batch.delete(doc(db, "settings", "channelsList"));
-      opCount++;
-    } catch (e) {}
-    
-    if (opCount > 0) {
-      await batch.commit();
+      const chunksColl = collection(db, "channel_chunks");
+      const existingSnap = await getDocs(chunksColl);
+      if (!existingSnap.empty) {
+        // Delete in batches of up to 400 to avoid batch limit (500)
+        let batch = writeBatch(db);
+        let count = 0;
+        for (const d of existingSnap.docs) {
+          batch.delete(d.ref);
+          count++;
+          if (count >= 400) {
+            await batch.commit();
+            batch = writeBatch(db);
+            count = 0;
+          }
+        }
+        if (count > 0) {
+          await batch.commit();
+        }
+      }
+    } catch (e) {
+      console.warn("Error cleaning old channel chunks:", e);
     }
+
+    try {
+      await deleteDoc(doc(db, "settings", "channelsList"));
+    } catch (e) {}
 
     // Persist channels in chunks of 100
     const chunkSize = 100;
@@ -1145,7 +1154,11 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
         password: password || process.env.ADMIN_PASSWORD || "password",
       };
       usersStore.push(user);
-      await persistUser(user);
+      try {
+        await persistUser(user);
+      } catch (e) {
+        console.warn("persistUser non-fatal error during login:", e);
+      }
     }
 
     if (!user) {
