@@ -1178,7 +1178,7 @@ app.use("/api", (req, res, next) => {
 });
 
 // Auth Endpoints
-app.post("/api/auth/login", async (req: Request, res: Response) => {
+app.post(["/api/auth/login", "/auth/login"], async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body || {};
     console.log("Login attempt for:", email);
@@ -1307,7 +1307,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/auth/register", async (req: Request, res: Response) => {
+app.post(["/api/auth/register", "/auth/register"], async (req: Request, res: Response) => {
   try {
     const { username, email, password } = req.body || {};
     const usernameClean = (username || "").trim();
@@ -1384,7 +1384,7 @@ app.post("/api/auth/register", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/api/auth/me", (req: Request, res: Response) => {
+app.get(["/api/auth/me", "/auth/me"], (req: Request, res: Response) => {
   const user = verifyToken(req.headers.authorization);
   if (!user) {
     return res.status(401).json({ error: "Unauthorized" });
