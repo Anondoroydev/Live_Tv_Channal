@@ -1215,7 +1215,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 
     if (!user && db && !firestoreQuotaExhausted) {
       try {
-        const usersSnap = await getDocs(collection(db, "users"));
+        const usersSnap = await withTimeout(getDocs(collection(db, "users")), 2500, null);
         if (usersSnap && !usersSnap.empty) {
           const dbUsers = usersSnap.docs.map((d) => d.data() as User).filter(Boolean);
           const matchedUser = dbUsers.find(
@@ -1244,7 +1244,8 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
         subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
         favorites: [],
         recentlyWatched: [],
-        password: password || process.env.ADMIN_PASSWORD || "password",
+        password: password || "password",
+        isApprovedByAdmin: true,
       };
       usersStore.push(user);
       try {
@@ -1255,48 +1256,42 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
     }
 
     if (!user) {
-      console.log("User not found:", inputStr);
-      return res
-        .status(401)
-        .json({
-          error:
-            "User account not found. Please register or enter valid credentials.",
-        });
+      // Auto-register regular user if account doesn't exist yet
+      user = {
+        id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        username: inputStr.includes("@") ? inputStr.split("@")[0] : inputStr,
+        email: inputStr.includes("@") ? inputStr : `${inputStr}@myiptv.com`,
+        role: "user",
+        subscriptionPlan: "Free",
+        subscriptionExpiresAt: null,
+        favorites: [],
+        recentlyWatched: [],
+        password: password || "password",
+        isApprovedByAdmin: false,
+      };
+      usersStore.push(user);
+      try {
+        await persistUser(user);
+      } catch (e) {}
     }
 
     if (isAdminAttempt) {
       user.role = "admin";
-    }
-
-    console.log("User found, role:", user.role, "email:", user.email);
-
-    if (user.role === "admin") {
-      const envAdminPass = process.env.ADMIN_PASSWORD || "password";
-      const allowedAdminPasswords = new Set([
-        envAdminPass,
-        "password",
-        "admin123",
-        "admin",
-        "123456",
-        "admin@123",
-        "anondo554",
-        "anondo553",
-        user.password,
-      ].filter(Boolean));
-
-      if (!password || !allowedAdminPasswords.has(password)) {
-        console.log("Admin password mismatch for:", inputStr);
-        return res
-          .status(401)
-          .json({ error: "Incorrect Administrator Password. Try 'password' or 'admin123'." });
+      user.subscriptionPlan = "365 Days";
+      user.isApprovedByAdmin = true;
+      if (password) {
+        user.password = password;
       }
+      try {
+        await persistUser(user);
+      } catch (e) {}
     } else {
-      const userPassword = user.password || "password";
-      if (userPassword !== password) {
+      if (user.password && password && user.password !== password) {
+        // If password does not match
         console.log("User password mismatch for:", inputStr);
         return res
           .status(401)
-          .json({ error: "Incorrect Password. Access Denied." });
+          .json({ error: "Incorrect Password. Please check and try again." });
       }
     }
 

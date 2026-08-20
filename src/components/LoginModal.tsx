@@ -119,16 +119,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
           <div>
             <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-              Email Address (ইমেইল ঠিকানা)
+              Username or Email (ব্যবহারকারীর নাম বা ইমেইল)
             </label>
             <div className="relative">
               <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="yourname@gmail.com"
+                placeholder="e.g. anondoray554@gmail.com or admin"
                 required
+                autoCapitalize="none"
+                autoCorrect="off"
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-400 transition-colors"
               />
             </div>
